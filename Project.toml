@@ -1,0 +1,7 @@
+name = "Sambo"
+uuid = "bceef165-f388-4bd3-ba8d-0d00d2b9f72f"
+authors = ["Demetrius Michael"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.10"

@@ -1,6 +1,18 @@
 using CairoMakie
 
 @testset "Makie extension" begin
+    makie_extension = Base.get_extension(SAMBO, :SAMBOMakieExt)
+    @test makie_extension._resultlabels(["run"], 1) == ["run"]
+    @test_throws DimensionMismatch makie_extension._resultlabels(["run"], 2)
+    jittered = makie_extension._jitter(
+        [0.5, 0.5],
+        SAMBO.SearchSpace(level=0:2),
+        1,
+        0.01,
+        MersenneTwister(10),
+    )
+    @test jittered != [0.5, 0.5]
+
     plot_result = SAMBO.minimize(
         x -> sum(abs2, x),
         SAMBO.Box([-1.0, -1.0], [1.0, 1.0]);

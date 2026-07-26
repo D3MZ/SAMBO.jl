@@ -46,6 +46,23 @@ end
 end
 
 @testset "OptimizationBase extension" begin
+    optimization_extension = Base.get_extension(SAMBO, :SAMBOOptimizationExt)
+    constrained = (
+        lcons=[0.0],
+        ucons=[1.0],
+        f=(cons=(point, parameters) -> [point[1]],),
+        p=nothing,
+    )
+    constraint = optimization_extension._constraint(constrained)
+    @test constraint([0.5])
+    @test !constraint([1.5])
+    @test_throws ArgumentError optimization_extension._constraint((
+        lcons=[0.0],
+        ucons=[1.0],
+        f=identity,
+        p=nothing,
+    ))
+
     problem = OptimizationBase.OptimizationProblem(
         (point, parameters) -> sum(abs2, point),
         zeros(2);

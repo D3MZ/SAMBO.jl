@@ -73,6 +73,8 @@ jobs:
         with:
           version: '1.12'
       - uses: julia-actions/cache@v2
+      - name: Instantiate core environment
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
       - name: Run core tests
         run: julia --project=. test/core_runtests.jl
   correctness:

@@ -267,10 +267,19 @@ function _plot_ticks(space::SAMBO.SearchSpace, dimension)
 end
 
 function _jitter(values, space, dimension, amount, rng)
-    isnothing(SAMBO._dimensionticks(space, dimension)) && return values
+    _isdiscrete(space, dimension) || return values
     output = collect(values)
     @. output += amount * randn(rng)
     return output
+end
+_isdiscrete(::SAMBO.Box, dimension) = false
+_isdiscrete(space::SAMBO.SearchSpace, dimension) =
+    space.dimensions[dimension] isa Union{AbstractRange,SAMBO.Choices}
+_discrete_count(::SAMBO.Box, dimension) = nothing
+function _discrete_count(space::SAMBO.SearchSpace, dimension)
+    descriptor = space.dimensions[dimension]
+    return descriptor isa AbstractRange ? length(descriptor) :
+        descriptor isa SAMBO.Choices ? length(descriptor.values) : nothing
 end
 
 function SAMBO.evaluationsplot(
@@ -332,8 +341,9 @@ function SAMBO.evaluationsplot!(
         ax = _matrix_axis(position, row, column, count, labels, axis)
         if diagonal
             push!(diagonal_axes, ax)
-            dimension_bins = isnothing(data.ticks[column]) ? bins :
-                max(1, length(data.ticks[column][1]))
+            discrete_count = _discrete_count(result.space, xdimension)
+            dimension_bins = isnothing(discrete_count) ? bins :
+                clamp(discrete_count, 1, 50)
             hist!(
                 ax,
                 @view(data.latent[column, :]);
@@ -391,7 +401,7 @@ end
 function SAMBO.objectiveplot(
     result::SAMBO.Result;
     model=SAMBO.fittedmodel(result),
-    dimensions=1:min(3, size(SAMBO.latentpoints(SAMBO.trace(result)), 1)),
+    dimensions=SAMBO.active_dimensions(result.space),
     names=nothing,
     optimum=nothing,
     resolution=16,
@@ -429,7 +439,7 @@ function SAMBO.objectiveplot!(
     position,
     result::SAMBO.Result;
     model=SAMBO.fittedmodel(result),
-    dimensions=1:min(3, size(SAMBO.latentpoints(SAMBO.trace(result)), 1)),
+    dimensions=SAMBO.active_dimensions(result.space),
     names=nothing,
     optimum=nothing,
     resolution=16,
@@ -448,11 +458,52 @@ function SAMBO.objectiveplot!(
     labels = _dimensionlabels(result.space, dims, names)
     count = length(dims)
     points = SAMBO.latentpoints(SAMBO.trace(result))
+    TX = eltype(points)
+    background = Matrix{TX}(
+        undef,
+        SAMBO.dimension(result.space),
+        samples,
+    )
+    SAMBO._sample_feasible!(
+        rng,
+        background,
+        SAMBO.UniformDesign(),
+        result.problem,
+    )
     best = argmin(SAMBO.objectivevalues(SAMBO.trace(result)))
     optimum_latent = isnothing(optimum) ? @view(points[:, best]) :
         SAMBO.encode(result.space, optimum)
-    point_indices = collect(1:min(plot_max_points, size(points, 2)))
+    point_count = min(plot_max_points, size(points, 2))
+    point_indices = unique(round.(Int, range(1, size(points, 2); length=point_count)))
     filter!(index -> index != best, point_indices)
+    dependences = Matrix{Any}(undef, count, count)
+    contour_minimum = Inf
+    contour_maximum = -Inf
+    for row in 1:count, column in 1:row
+        selected_dimensions = row == column ?
+            (dims[column],) : (dims[column], dims[row])
+        dependence = SAMBO.partialdependence(
+            result;
+            model,
+            dimensions=selected_dimensions,
+            resolution,
+            samples,
+            rng,
+            background,
+        )
+        dependences[row, column] = dependence
+        if row != column
+            contour_minimum = min(contour_minimum, minimum(dependence.values))
+            contour_maximum = max(contour_maximum, maximum(dependence.values))
+        end
+    end
+    contour_range = if isfinite(contour_minimum)
+        upper = contour_minimum < contour_maximum ?
+            contour_maximum : contour_minimum + eps(float(contour_minimum))
+        (contour_minimum, upper)
+    else
+        (0.0, 1.0)
+    end
     diagonal_axes = Axis[]
     colorplot = nothing
     for row in 1:count, column in 1:row
@@ -462,14 +513,7 @@ function SAMBO.objectiveplot!(
         ax = _matrix_axis(position, row, column, count, labels, axis)
         if diagonal
             push!(diagonal_axes, ax)
-            dependence = SAMBO.partialdependence(
-                result;
-                model,
-                dimensions=(xdimension,),
-                resolution,
-                samples,
-                rng,
-            )
+            dependence = dependences[row, column]
             lines!(
                 ax,
                 dependence.grids[1],
@@ -486,20 +530,13 @@ function SAMBO.objectiveplot!(
             )
             xlims!(ax, -0.05, 1.05)
         else
-            dependence = SAMBO.partialdependence(
-                result;
-                model,
-                dimensions=(xdimension, ydimension),
-                resolution,
-                samples,
-                rng,
-            )
+            dependence = dependences[row, column]
             colorplot = contourf!(
                 ax,
                 dependence.grids[1],
                 dependence.grids[2],
                 dependence.values;
-                levels,
+                levels=range(contour_range[1], contour_range[2]; length=levels),
                 colormap=isempty(point_indices) ? colormap :
                     [(color, 0.8) for color in to_colormap(colormap)],
             )

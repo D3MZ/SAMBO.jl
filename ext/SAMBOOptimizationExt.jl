@@ -3,7 +3,8 @@ module SAMBOOptimizationExt
 using SAMBO
 import OptimizationBase
 
-const _SAMBOAlgorithm = Union{SAMBO.SMBO,SAMBO.SCEUA,SAMBO.SHGO}
+const _SAMBOAlgorithm =
+    Union{SAMBO.SMBO,SAMBO.SCEUA,SAMBO.SHGO,SAMBO.TopologicalMultistart}
 
 function _constraint(problem)
     isnothing(problem.lcons) && return SAMBO.Unconstrained()

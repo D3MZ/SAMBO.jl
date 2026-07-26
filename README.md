@@ -6,11 +6,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 Julia-native global black-box optimization with SCE-UA, surrogate model-based
-optimization (SMBO), and simplicial homology global optimization (SHGO).
+optimization (SMBO), and iterative simplicial homology global optimization (SHGO).
 SAMBO.jl supports continuous, integral, and categorical variables, constraints,
 ask/tell workflows, threaded evaluation, and optional ecosystem integrations.
-
-Attempts to be feature parity with Python's excellent SAMBO package.
 
 ## Install
 
@@ -52,6 +50,7 @@ problem = Problem(f, Box(lower, upper))
 solve(problem, SCEUA(); maximum_evaluations=500)
 solve(problem, SMBO(); maximum_evaluations=500)
 solve(problem, SHGO(); maximum_evaluations=500)
+solve(problem, TopologicalMultistart(); maximum_evaluations=500)
 ```
 
 External or distributed evaluations use identified ask/tell batches:
@@ -84,7 +83,7 @@ save("evaluations.png", evaluationsplot(result))
 | Convergence | Regret |
 |---|---|
 | ![Convergence plot](reference/plots/julia/convergence.png) | ![Regret plot](reference/plots/julia/regret.png) |
-| **Objective / partial dependence** | **Evaluations** |
+| Objective / partial dependence | Evaluations |
 | ![Objective partial-dependence plot](reference/plots/julia/objective.png) | ![Evaluation diagnostic plot](reference/plots/julia/evaluations.png) |
 
 Package extensions also provide SurrogatesBase, OptimizationBase, and
@@ -95,7 +94,7 @@ MLJTuning integration without adding them to the core dependency set.
 | Feature | SAMBO.jl | [BlackBoxOptim.jl](https://github.com/SciML/BlackBoxOptim.jl) |
 |---|---|---|
 | Primary focus | Structured, evaluation-limited global optimization | Population-based stochastic global optimization |
-| Algorithms | SCE-UA, SMBO, SHGO | Differential evolution, NES, direct and memetic search, SPSA, Borg MOEA |
+| Algorithms | SCE-UA, SMBO, SHGO, topological multistart | Differential evolution, NES, direct and memetic search, SPSA, Borg MOEA |
 | Search spaces | Named continuous, integer, and categorical variables | Numeric vectors and bounded ranges |
 | Constraints | First-class constrained `Problem` | Not part of the primary `bboptimize` interface |
 | External evaluation | Identified `ask!`/`tell!` batches | Primarily managed through `bboptimize` |
@@ -120,21 +119,48 @@ MLJTuning integration without adding them to the core dependency set.
 | MLJ tuning | `SAMBOTuning()` | × |
 | scikit-learn search | × | `SamboSearchCV(...)` |
 
-### Rosenbrock microbenchmarks
+### Rosenbrock solver-overhead microbenchmarks
 
 <sub>Apple M1 Max; median warm-run time over 40 seeded Rosenbrock evaluations using Julia 1.12.6 and Python 3.14.6 with Python SAMBO 1.25.2.</sub>
 
-| Algorithm | Julia | Python | Improvement |
-|---|---:|---:|---:|
-| SCE-UA | 0.0198 ms | 1.426 ms | 72.1× faster |
-| SMBO | 15.191 ms | 631.436 ms | 41.6× faster |
-| SHGO | 0.0732 ms | 1.557 ms | 21.3× faster |
+These timings measure overhead for the exact configurations below; they are not
+algorithm-performance comparisons.
+
+| Algorithm | SAMBO.jl configuration | Julia | Python SAMBO configuration | Python |
+|---|---|---:|---|---:|
+| SCE-UA | `SCEUA()` | 0.0198 ms | `method="sceua"` | 1.426 ms |
+| SMBO | `SMBO(candidate_pool=1024)` | 15.191 ms | `method="smbo"` | 631.436 ms |
 
 Run the benchmark:
 
 ```sh
 julia --project=benchmark benchmark/benchmarks.jl
 python3 benchmark/python_reference.py
+```
+
+### Cross-runtime solution-quality checks
+
+Identical objective formulas and bounds were tested over five independent seeds.
+SCE-UA and SHGO received 1,000 evaluations and SMBO received 300. The rotated, shifted
+five-dimensional cases are multimodal or ill-conditioned; targets were fixed in
+the scripts before running the matrix.
+
+| Problem (known optimum; target) | Julia SCE-UA | Python SCE-UA | Julia SMBO | Python SMBO | Julia SHGO | Python SHGO |
+|---|---:|---:|---:|---:|---:|---:|
+| Hartmann-6 (−3.322; ≤ −2.8) | −3.320; 5/5 | −3.276; 5/5 | −3.304; 5/5 | −2.635; 2/5 | −2.647; 2/5 | −3.322; 5/5 |
+| Rotated Rastrigin-5 (0; ≤ 12) | 8.125; 5/5 | 17.258; 0/5 | 12.159; 2/5 | 35.577; 0/5 | 19.054; 0/5 | 2.985; 5/5 |
+| Rotated Rosenbrock-5 (0; ≤ 12) | 2.598; 5/5 | 12.298; 2/5 | 121.815; 0/5 | 88.992; 0/5 | 53.988; 1/5 | 4.28e−9; 5/5 |
+
+Each cell is `median final objective; target hits`. Independent RNG
+implementations prevent trajectory equality, so this is a known-optimum
+solution-quality check, not proof of algorithmic equivalence. Measured with Julia
+1.12.6 and Python 3.14.6 using Python SAMBO 1.25.2.
+
+Reproduce the matrix:
+
+```sh
+julia --project=. benchmark/correctness_julia.jl
+python3 benchmark/correctness_python.py
 ```
 
 ## License

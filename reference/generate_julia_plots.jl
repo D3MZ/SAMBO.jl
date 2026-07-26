@@ -14,7 +14,8 @@ values = vec(raw[:, 4])
 trace = SAMBO.Trace{Float64}(3, length(values))
 trace.latent_points .= latent
 trace.objective_values .= values
-trace.feasible .= true
+trace.source .= SAMBO.InternalEvaluation
+trace.evaluation_numbers .= eachindex(values)
 trace.iterations .= eachindex(values)
 trace.elapsed_seconds .= 0
 trace.count = length(values)
@@ -26,12 +27,14 @@ model = SAMBO.fitmodel(
 )
 best = argmin(values)
 result = SAMBO.Result(
+    SAMBO.Problem(nothing, space),
     space,
     SAMBO.decode(space, @view latent[:, best]),
     values[best],
     trace,
     model,
     SAMBO.SMBO(),
+    SAMBO.Minimize(),
     :evaluation_limit,
     (evaluations=length(values), iterations=length(values)),
 )

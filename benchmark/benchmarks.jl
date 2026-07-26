@@ -14,7 +14,6 @@ function benchmark_suite()
     configurations = (
         ("SCE-UA", SCEUA()),
         ("SMBO-GP", SMBO(candidate_pool=1024)),
-        ("SHGO", SHGO(samples=40)),
     )
     suite = BenchmarkGroup()
     for (name, algorithm) in configurations

@@ -1,13 +1,22 @@
 "Return evaluation indices and the running best objective."
 function convergencedata(result::Result)
     values = objectivevalues(result.trace)
-    return (evaluations=collect(eachindex(values)), best=accumulate(min, values))
+    return (
+        evaluations=collect(@view result.trace.evaluation_numbers[1:result.trace.count]),
+        best=result.sense isa Minimize ?
+            accumulate(min, values) : accumulate(max, values),
+    )
 end
 
 "Return cumulative regret relative to `optimum` (the observed minimum by default)."
 function regretdata(result::Result; optimum=minimum(result))
     values = objectivevalues(result.trace)
-    return (evaluations=collect(eachindex(values)), regret=cumsum(values .- optimum))
+    return (
+        evaluations=collect(@view result.trace.evaluation_numbers[1:result.trace.count]),
+        regret=cumsum(
+            result.sense isa Minimize ? values .- optimum : optimum .- values,
+        ),
+    )
 end
 
 function _checkdimensions(space, dimensions)
@@ -25,7 +34,7 @@ function evaluationsdata(result::Result; dimensions=1:dimension(result.space))
     return (
         latent=Matrix(latentpoints(result.trace)[dims, :]),
         values=collect(objectivevalues(result.trace)),
-        order=collect(1:evaluation_count(result)),
+        order=collect(@view result.trace.evaluation_numbers[1:result.trace.count]),
         labels=[_dimensionlabel(result.space, i) for i in dims],
         ticks=[_dimensionticks(result.space, i) for i in dims],
     )
@@ -39,51 +48,64 @@ function partialdependence(
     resolution=40,
     samples=min(128, evaluation_count(result)),
     rng=Random.default_rng(),
+    background=nothing,
 )
     dims = Tuple(_checkdimensions(result.space, dimensions))
     length(dims) in (1, 2) || throw(ArgumentError("select one or two dimensions"))
     resolution > 1 || throw(ArgumentError("resolution must exceed one"))
     samples > 0 || throw(ArgumentError("samples must be positive and the trace must be nonempty"))
-    if isnothing(model)
-        model = fitmodel(
-            GaussianProcessSurrogate(),
-            latentpoints(result.trace),
-            objectivevalues(result.trace),
-            rng,
-        )
-    end
+    isnothing(model) && throw(ArgumentError(
+        "partialdependence requires an explicit fitted model",
+    ))
 
-    grids = ntuple(_ -> collect(range(0, 1; length=resolution)), length(dims))
-    base = rand(rng, dimension(result.space), samples)
-    values = Array{Float64}(undef, ntuple(_ -> resolution, length(dims)))
-    if length(dims) == 1
-        queries = repeat(base, 1, resolution)
-        for i in 1:resolution
-            block = (i - 1) * samples + 1:i * samples
-            queries[dims[1], block] .= grids[1][i]
+    TX = eltype(result.trace.latent_points)
+    TY = eltype(result.trace.objective_values)
+    grids = ntuple(length(dims)) do index
+        grid = collect(range(zero(TX), one(TX); length=resolution))
+        for value_index in eachindex(grid)
+            coordinate = zeros(TX, dimension(result.space))
+            coordinate[dims[index]] = grid[value_index]
+            _canonicalize!(coordinate, result.space)
+            grid[value_index] = coordinate[dims[index]]
         end
-        predictions = Vector{eltype(result.trace.objective_values)}(undef, size(queries, 2))
-        predictmean!(predictions, model, queries)
-        for i in 1:resolution
-            block = (i - 1) * samples + 1:i * samples
-            values[i] = mean(@view predictions[block])
+        unique!(grid)
+    end
+    base = if isnothing(background)
+        generated = Matrix{TX}(
+            undef,
+            dimension(result.space),
+            samples,
+        )
+        _sample_feasible!(
+            rng,
+            generated,
+            UniformDesign(),
+            result.problem,
+        )
+    else
+        size(background) == (dimension(result.space), samples) ||
+            throw(DimensionMismatch("background must be dimensions × samples"))
+        generated = Matrix{TX}(background)
+        _canonicalize_samples!(generated, result.space)
+    end
+    grid_sizes = length.(grids)
+    values = Array{TY}(undef, grid_sizes...)
+    queries = copy(base)
+    predictions = Vector{TY}(undef, samples)
+    if length(dims) == 1
+        for i in eachindex(grids[1])
+            queries .= base
+            queries[dims[1], :] .= grids[1][i]
+            predictmean!(predictions, model, queries)
+            values[i] = _loss(result.sense, mean(predictions))
         end
     else
-        queries = repeat(base, 1, resolution^2)
-        block_number = 0
-        for j in 1:resolution, i in 1:resolution
-            block_number += 1
-            block = (block_number - 1) * samples + 1:block_number * samples
-            queries[dims[1], block] .= grids[1][i]
-            queries[dims[2], block] .= grids[2][j]
-        end
-        predictions = Vector{eltype(result.trace.objective_values)}(undef, size(queries, 2))
-        predictmean!(predictions, model, queries)
-        block_number = 0
-        for j in 1:resolution, i in 1:resolution
-            block_number += 1
-            block = (block_number - 1) * samples + 1:block_number * samples
-            values[i, j] = mean(@view predictions[block])
+        for j in eachindex(grids[2]), i in eachindex(grids[1])
+            queries .= base
+            queries[dims[1], :] .= grids[1][i]
+            queries[dims[2], :] .= grids[2][j]
+            predictmean!(predictions, model, queries)
+            values[i, j] = _loss(result.sense, mean(predictions))
         end
     end
     return (grids=grids, values=values, dimensions=dims)

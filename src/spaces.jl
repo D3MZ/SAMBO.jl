@@ -3,6 +3,8 @@ struct Continuous{T<:Real}
     lower::T
     upper::T
     function Continuous(lower::T, upper::T) where {T<:Real}
+        isfinite(lower) && isfinite(upper) ||
+            throw(ArgumentError("continuous bounds must be finite"))
         lower <= upper || throw(ArgumentError("lower must not exceed upper"))
         new{T}(lower, upper)
     end
@@ -14,6 +16,7 @@ struct Choices{V<:Tuple}
     values::V
     function Choices(values::Tuple)
         isempty(values) && throw(ArgumentError("Choices cannot be empty"))
+        allunique(values) || throw(ArgumentError("Choices must be unique"))
         new{typeof(values)}(values)
     end
 end
@@ -23,47 +26,66 @@ Choices(values...) = Choices(values)
 struct Box{T<:AbstractFloat,L<:AbstractVector{T},U<:AbstractVector{T}}
     lower::L
     upper::U
-    function Box(lower::L, upper::U) where {T<:AbstractFloat,L<:AbstractVector{T},U<:AbstractVector{T}}
+    function Box(
+        lower::L,
+        upper::U,
+    ) where {T<:AbstractFloat,L<:AbstractVector{T},U<:AbstractVector{T}}
         length(lower) == length(upper) || throw(DimensionMismatch("bounds differ in length"))
-        all(i -> lower[i] <= upper[i], eachindex(lower, upper)) || throw(ArgumentError("invalid bounds"))
-        new{T,L,U}(lower, upper)
+        isempty(lower) && throw(ArgumentError("Box cannot be empty"))
+        all(isfinite, lower) && all(isfinite, upper) ||
+            throw(ArgumentError("box bounds must be finite"))
+        all(i -> lower[i] <= upper[i], eachindex(lower, upper)) ||
+            throw(ArgumentError("invalid bounds"))
+        copied_lower = collect(lower)
+        copied_upper = collect(upper)
+        new{T,typeof(copied_lower),typeof(copied_upper)}(copied_lower, copied_upper)
     end
 end
 Box(lower::AbstractVector{<:Real}, upper::AbstractVector{<:Real}) = begin
+    length(lower) == length(upper) || throw(DimensionMismatch("bounds differ in length"))
+    isempty(lower) && throw(ArgumentError("Box cannot be empty"))
     T = float(promote_type(eltype(lower), eltype(upper)))
-    Box(T.(lower), T.(upper))
+    copied_lower = T.(collect(lower))
+    copied_upper = T.(collect(upper))
+    all(isfinite, copied_lower) && all(isfinite, copied_upper) ||
+        throw(ArgumentError("box bounds must be finite"))
+    all(i -> copied_lower[i] <= copied_upper[i], eachindex(copied_lower, copied_upper)) ||
+        throw(ArgumentError("invalid bounds"))
+    Box{T,typeof(copied_lower),typeof(copied_upper)}(copied_lower, copied_upper)
 end
 Box(bounds::AbstractVector{<:Tuple}) = Box(first.(bounds), last.(bounds))
 
 "A heterogeneous search space. Keyword construction decodes points as named tuples."
-struct SearchSpace{N,D<:Tuple}
-    names::N
+struct SearchSpace{D<:Union{Tuple,NamedTuple}}
     dimensions::D
-    function SearchSpace(names::N, dimensions::D) where {N,D<:Tuple}
-        if !isnothing(names)
-            names isa Tuple{Vararg{Symbol}} || throw(ArgumentError("dimension names must be symbols"))
-            length(names) == length(dimensions) || throw(DimensionMismatch("names and dimensions differ in length"))
-            allunique(names) || throw(ArgumentError("dimension names must be unique"))
+    function SearchSpace(dimensions::D) where {D<:Union{Tuple,NamedTuple}}
+        isempty(dimensions) && throw(ArgumentError("SearchSpace cannot be empty"))
+        for descriptor in dimensions
+            descriptor isa Union{Continuous,AbstractRange,Choices} ||
+                throw(ArgumentError("unsupported search-space dimension $(typeof(descriptor))"))
+            descriptor isa AbstractRange && isempty(descriptor) &&
+                throw(ArgumentError("search-space ranges cannot be empty"))
         end
-        any(d -> d isa AbstractRange && isempty(d), dimensions) &&
-            throw(ArgumentError("search-space ranges cannot be empty"))
-        new{N,D}(names, dimensions)
+        new{D}(dimensions)
     end
 end
-SearchSpace(dimensions::Tuple) = SearchSpace(nothing, dimensions)
 SearchSpace(dimensions...) = SearchSpace(dimensions)
-SearchSpace(; kwargs...) = SearchSpace(Tuple(keys(kwargs)), Tuple(values(kwargs)))
+SearchSpace(; kwargs...) = SearchSpace((; kwargs...))
 
 dimension(space::Box) = length(space.lower)
 dimension(space::SearchSpace) = length(space.dimensions)
 latenttype(space::Box{T}) where {T} = T
 latenttype(::SearchSpace) = Float64
+dimensionnames(::Box) = nothing
+dimensionnames(space::SearchSpace{<:NamedTuple}) = propertynames(space.dimensions)
+dimensionnames(::SearchSpace) = nothing
 
 @inline _decode(d::Continuous, z) = d.lower + z * (d.upper - d.lower)
 @inline function _decode(d::AbstractRange, z)
-    d[clamp(round(Int, 1 + z * (length(d) - 1)), 1, length(d))]
+    d[min(floor(Int, z * length(d)) + 1, length(d))]
 end
-@inline _decode(d::Choices, z) = d.values[clamp(round(Int, 1 + z * (length(d.values) - 1)), 1, length(d.values))]
+@inline _decode(d::Choices, z) =
+    d.values[min(floor(Int, z * length(d.values)) + 1, length(d.values))]
 
 @inline function _encode(d::Continuous, x)
     d.lower <= x <= d.upper || throw(ArgumentError("value is outside its continuous dimension"))
@@ -71,6 +93,14 @@ end
 end
 @inline _encode(d::AbstractRange, x) = _encode_discrete(d, x)
 @inline _encode(d::Choices, x) = _encode_discrete(d.values, x)
+function _encode_discrete(values::AbstractRange, x)
+    x in values || throw(ArgumentError("value is not in its discrete dimension"))
+    index = length(values) == 1 ? 1 :
+        round(Int, (x - first(values)) / step(values)) + 1
+    1 <= index <= length(values) && isequal(values[index], x) ||
+        throw(ArgumentError("value is not in its discrete dimension"))
+    return length(values) == 1 ? 0.0 : (index - 1) / (length(values) - 1)
+end
 function _encode_discrete(values, x)
     i = findfirst(isequal(x), values)
     isnothing(i) && throw(ArgumentError("value is not in its discrete dimension"))
@@ -87,10 +117,24 @@ function decode(space::Box, z::AbstractVector)
     _checklatent(space, z)
     map((lower, upper, x) -> lower + x * (upper - lower), space.lower, space.upper, z)
 end
-function decode(space::SearchSpace, z::AbstractVector)
+@generated function _decodedimensions(dimensions::D, z) where {D<:Union{Tuple,NamedTuple}}
+    count = D <: NamedTuple ? length(D.parameters[1]) : length(D.parameters)
+    return Expr(
+        :tuple,
+        [:( _decode(getfield(dimensions, $index), z[$index]) ) for index in 1:count]...,
+    )
+end
+function decode(space::SearchSpace{D}, z::AbstractVector) where {D<:Tuple}
     _checklatent(space, z)
-    values = ntuple(i -> _decode(space.dimensions[i], z[i]), dimension(space))
-    isnothing(space.names) ? values : NamedTuple{space.names}(values)
+    return _decodedimensions(space.dimensions, z)
+end
+function decode(
+    space::SearchSpace{D},
+    z::AbstractVector,
+) where {Names,Types,D<:NamedTuple{Names,Types}}
+    _checklatent(space, z)
+    decoded = _decodedimensions(space.dimensions, z)
+    return NamedTuple{Names}(decoded)
 end
 function encode(space::Box, point)
     length(point) == dimension(space) || throw(DimensionMismatch("point and search space differ in dimension"))
@@ -100,15 +144,16 @@ function encode(space::Box, point)
     end
 end
 function encode(space::SearchSpace, point)
-    values = if point isa NamedTuple && !isnothing(space.names)
-        all(name -> hasproperty(point, name), space.names) ||
+    names = dimensionnames(space)
+    values = if point isa NamedTuple && !isnothing(names)
+        all(name -> hasproperty(point, name), names) ||
             throw(ArgumentError("named point is missing a search-space dimension"))
-        ntuple(i -> getproperty(point, space.names[i]), dimension(space))
+        ntuple(i -> getproperty(point, names[i]), dimension(space))
     else
         Tuple(point)
     end
     length(values) == dimension(space) || throw(DimensionMismatch("point and search space differ in dimension"))
-    [latenttype(space)(_encode(space.dimensions[i], values[i])) for i in eachindex(space.dimensions)]
+    [latenttype(space)(_encode(space.dimensions[i], values[i])) for i in 1:dimension(space)]
 end
 function encode!(destination, space, point)
     length(destination) == dimension(space) ||
@@ -118,13 +163,21 @@ function encode!(destination, space, point)
 end
 function project!(z, space=nothing)
     clamp!(z, zero(eltype(z)), one(eltype(z)))
+    !isnothing(space) && _canonicalize!(z, space)
     return z
 end
-_canonicalize!(z, ::Box) = z
+function _canonicalize!(z, space::Box)
+    for index in eachindex(space.lower, space.upper)
+        space.lower[index] == space.upper[index] && (z[index] = zero(eltype(z)))
+    end
+    return z
+end
 function _canonicalize!(z, space::SearchSpace)
-    for index in eachindex(space.dimensions)
+    for index in 1:dimension(space)
         dimension = space.dimensions[index]
-        if dimension isa AbstractRange || dimension isa Choices
+        if dimension isa Continuous && dimension.lower == dimension.upper
+            z[index] = zero(eltype(z))
+        elseif dimension isa AbstractRange || dimension isa Choices
             z[index] = _encode(dimension, _decode(dimension, z[index]))
         end
     end
@@ -139,18 +192,40 @@ function modelmatrix!(destination, space, points)
 end
 active_dimensions(space::Box) = findall(i -> space.lower[i] != space.upper[i], eachindex(space.lower))
 function active_dimensions(space::SearchSpace)
-    findall(eachindex(space.dimensions)) do i
+    findall(1:dimension(space)) do i
         d = space.dimensions[i]
         d isa Continuous ? d.lower != d.upper :
         d isa AbstractRange ? length(d) > 1 :
         d isa Choices ? length(d.values) > 1 : true
     end
 end
+
+function space_cardinality(space::Box)
+    return all(space.lower .== space.upper) ? 1 : nothing
+end
+function space_cardinality(space::SearchSpace)
+    cardinality = 1
+    for descriptor in space.dimensions
+        count = if descriptor isa Continuous
+            descriptor.lower == descriptor.upper ? 1 : return nothing
+        elseif descriptor isa AbstractRange
+            length(descriptor)
+        else
+            length(descriptor.values)
+        end
+        cardinality > typemax(Int) ÷ count && return nothing
+        cardinality *= count
+    end
+    return cardinality
+end
 dimensionlabel(space, i) = _dimensionlabel(space, i)
 dimensionticks(space, i) = _dimensionticks(space, i)
 
 _dimensionlabel(::Box, i) = "x$i"
-_dimensionlabel(space::SearchSpace, i) = isnothing(space.names) ? "x$i" : string(space.names[i])
+function _dimensionlabel(space::SearchSpace, i)
+    names = dimensionnames(space)
+    return isnothing(names) ? "x$i" : string(names[i])
+end
 function _dimensionticks(space::SearchSpace, i)
     d = space.dimensions[i]
     vals = d isa Choices ? d.values : d isa AbstractRange && length(d) <= 20 ? Tuple(d) : nothing

@@ -68,7 +68,6 @@ def main():
     for label, method in (
         ("SCE-UA", "sceua"),
         ("SMBO", "smbo"),
-        ("SHGO", "shgo"),
     ):
         try:
             elapsed, peak, blocks, result, calls = measure(method)

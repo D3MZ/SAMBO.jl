@@ -1,33 +1,72 @@
-isfeasible(problem::Problem, point) = Bool(problem.constraint(point))
+constraint_violation(::Unconstrained, point) = 0.0
+constraint_violation(::Unconstrained, point, parameters) = 0.0
+function constraint_violation(constraint, point)
+    value = constraint(point)
+    value isa Bool && return value ? 0.0 : 1.0
+    value isa Real ||
+        throw(ArgumentError("constraint must return Bool or a real violation"))
+    return value
+end
+function constraint_violation(constraint, point, parameters)
+    if applicable(constraint, point, parameters)
+        value = constraint(point, parameters)
+        value isa Bool && return value ? 0.0 : 1.0
+        value isa Real ||
+            throw(ArgumentError("constraint must return Bool or a real violation"))
+        return value
+    end
+    return constraint_violation(constraint, point)
+end
+function constraint_violation(problem::Problem, point)
+    return isnothing(problem.parameters) ?
+        constraint_violation(problem.constraint, point) :
+        constraint_violation(problem.constraint, point, problem.parameters)
+end
+function isfeasible(problem::Problem, point)
+    violation = constraint_violation(problem, point)
+    return !isnan(violation) && violation <= 0
+end
 
-function evaluate!(values, ::Serial, problem::Problem, candidates)
+function evaluate!(values, ::Serial, problem::Problem, candidates, nonfinite)
     T = eltype(values)
     for column in axes(candidates, 2)
-        values[column] = _evaluate(problem, @view(candidates[:, column]), T)
+        values[column] = _evaluate(
+            problem,
+            @view(candidates[:, column]),
+            T,
+            nonfinite,
+        )
     end
     return values
 end
 
-function evaluate!(values, ::Threaded, problem::Problem, candidates)
+function evaluate!(values, ::Threaded, problem::Problem, candidates, nonfinite)
     T = eltype(values)
     Threads.@threads for column in axes(candidates, 2)
-        values[column] = _evaluate(problem, @view(candidates[:, column]), T)
+        values[column] = _evaluate(
+            problem,
+            @view(candidates[:, column]),
+            T,
+            nonfinite,
+        )
     end
     return values
 end
 
-mutable struct SolverCore{P,R,E,C,T}
+mutable struct SolverCore{P,R,E,C,TR,SC,N,T}
     problem::P
     rng::R
     executor::E
     callback::C
-    trace::Trace{T}
-    criteria::StopCriteria{T}
+    trace::TR
+    criteria::SC
+    nonfinite::N
     iteration::Int
-    started::Float64
+    started::UInt64
     retcode::Symbol
     best_value::T
-    last_improvement::Int
+    best_index::Int
+    last_significant_improvement_evaluation::Int
     evaluations::Int
 end
 
@@ -42,17 +81,21 @@ function _makecore(
     rng=Random.default_rng(),
     executor=Serial(),
     callback=Returns(false),
+    objective_type=Float64,
+    nonfinite=ErrorOnNonfinite(),
 )
     maximum_evaluations > 0 || throw(ArgumentError("maximum_evaluations must be positive"))
     maximum_iterations > 0 || throw(ArgumentError("maximum_iterations must be positive"))
     stall_evaluations >= 0 || throw(ArgumentError("stall_evaluations must be nonnegative"))
     time_limit > 0 || throw(ArgumentError("time_limit must be positive"))
-    T = latenttype(problem.space)
-    criteria = StopCriteria{T}(
+    TX = latenttype(problem.space)
+    TY = float(objective_type)
+    TY <: AbstractFloat || throw(ArgumentError("objective_type must be an AbstractFloat type"))
+    criteria = StopCriteria{TY}(
         maximum_evaluations,
         maximum_iterations,
-        T(absolute_tolerance),
-        T(relative_tolerance),
+        TY(absolute_tolerance),
+        TY(relative_tolerance),
         stall_evaluations,
         Float64(time_limit),
     )
@@ -61,12 +104,14 @@ function _makecore(
         rng,
         executor,
         callback,
-        Trace{T}(dimension(problem.space), maximum_evaluations),
+        Trace{TX,TY}(dimension(problem.space), maximum_evaluations),
         criteria,
+        nonfinite,
         0,
-        time(),
+        time_ns(),
         :running,
-        T(Inf),
+        _worst(TY, problem.sense),
+        0,
         0,
         0,
     )
@@ -77,7 +122,7 @@ _finished(core::SolverCore) = core.retcode != :running
 
 function _evaluate_batch(core::SolverCore, candidates)
     values = Vector{eltype(core.trace.objective_values)}(undef, size(candidates, 2))
-    evaluate!(values, core.executor, core.problem, candidates)
+    evaluate!(values, core.executor, core.problem, candidates, core.nonfinite)
     return values
 end
 
@@ -87,25 +132,40 @@ function _validated_values(core::SolverCore, candidates, values)
     T = eltype(core.trace.objective_values)
     converted = Vector{T}(undef, length(values))
     for index in eachindex(converted)
-        converted[index] = _checkedvalue(T, values[index])
+        converted[index] = _checkedvalue(
+            T,
+            values[index],
+            core.nonfinite,
+            core.problem.sense,
+        )
     end
     return converted
 end
 
-function _update_stop!(core::SolverCore, latest_point)
+function _update_stop!(
+    core::SolverCore,
+    latest_point,
+    source::ObservationSource,
+)
     count = core.trace.count
     latest = core.trace.objective_values[count]
-    improved = if isfinite(core.best_value)
+    latest_loss = _loss(core.problem, latest)
+    best_loss = _loss(core.problem, core.best_value)
+    significant = if isfinite(core.best_value)
         tolerance = core.criteria.absolute_tolerance +
             core.criteria.relative_tolerance * max(abs(core.best_value), one(latest))
-        latest < core.best_value - tolerance
+        latest_loss < best_loss - tolerance
     else
         true
     end
-    if improved
+    if _isbetter(core.problem, latest, core.best_value)
         core.best_value = latest
-        core.last_improvement = count
+        core.best_index = count
     end
+    significant && source != KnownObservation &&
+        (core.last_significant_improvement_evaluation = core.evaluations)
+    source == KnownObservation && return core
+    _finished(core) && return core
     event = ProgressEvent(core.evaluations, core.iteration, latest, core.best_value, latest_point)
     if core.callback(event)
         core.retcode = :callback_stop
@@ -114,15 +174,22 @@ function _update_stop!(core::SolverCore, latest_point)
     elseif core.iteration >= core.criteria.maximum_iterations
         core.retcode = :iteration_limit
     elseif core.criteria.stall_evaluations > 0 &&
-            count - core.last_improvement >= core.criteria.stall_evaluations
+            core.evaluations - core.last_significant_improvement_evaluation >=
+                core.criteria.stall_evaluations
         core.retcode = :stalled
-    elseif time() - core.started >= core.criteria.time_limit
+    elseif (time_ns() - core.started) / 1e9 >= core.criteria.time_limit
         core.retcode = :time_limit
     end
     return core
 end
 
-function _commit_batch!(core::SolverCore, candidates, values; count_evaluations=true)
+function _commit_batch!(
+    core::SolverCore,
+    candidates,
+    values;
+    source=InternalEvaluation,
+)
+    count_evaluations = source != KnownObservation
     !count_evaluations || size(candidates, 2) <= _remaining(core) ||
         throw(ArgumentError("batch exceeds the remaining evaluation budget"))
     for column in axes(candidates, 2)
@@ -131,11 +198,13 @@ function _commit_batch!(core::SolverCore, candidates, values; count_evaluations=
             core.trace,
             @view(candidates[:, column]),
             values[column],
+            source,
+            count_evaluations ? core.evaluations : 0,
             core.iteration,
             core.started,
         )
         point = decode(core.problem.space, @view candidates[:, column])
-        _update_stop!(core, point)
+        _update_stop!(core, point, source)
     end
     return core
 end
@@ -148,7 +217,7 @@ function _evaluate_commit!(core::SolverCore, candidates)
 end
 
 function _sample_feasible(core::SolverCore, n, sampler=UniformDesign())
-    candidates = Matrix{eltype(core.trace.objective_values)}(
+    candidates = Matrix{eltype(core.trace.latent_points)}(
         undef,
         dimension(core.problem.space),
         n,
@@ -159,27 +228,34 @@ end
 
 function _result(core::SolverCore, algorithm, model=nothing; statistics=(iterations=core.iteration,))
     statistics = merge((evaluations=core.evaluations,), statistics)
+    frozen_trace = _snapshot(core.trace)
     if core.trace.count == 0
         return Result(
+            core.problem,
             core.problem.space,
             nothing,
-            eltype(core.trace.objective_values)(Inf),
-            core.trace,
+            _worst(eltype(core.trace.objective_values), core.problem.sense),
+            frozen_trace,
             model,
             algorithm,
+            core.problem.sense,
             core.retcode,
             statistics,
         )
     end
-    index = argmin(objectivevalues(core.trace))
+    index = core.best_index == 0 ?
+        argmin(_loss.(Ref(core.problem.sense), objectivevalues(core.trace))) :
+        core.best_index
     point = decode(core.problem.space, @view core.trace.latent_points[:, index])
     return Result(
+        core.problem,
         core.problem.space,
         point,
         core.trace.objective_values[index],
-        core.trace,
+        frozen_trace,
         model,
         algorithm,
+        core.problem.sense,
         core.retcode,
         statistics,
     )
@@ -189,7 +265,8 @@ function _points_to_latent(space, points)
     d = dimension(space)
     if points isa NamedTuple ||
             (space isa Box && points isa AbstractVector{<:Real} && length(points) == d) ||
-            (space isa SearchSpace && isnothing(space.names) && points isa Tuple && length(points) == d)
+            (space isa SearchSpace && isnothing(dimensionnames(space)) &&
+                points isa Tuple && length(points) == d)
         return reshape(encode(space, points), d, 1)
     elseif points isa AbstractMatrix
         size(points, 1) == d ||
@@ -225,7 +302,7 @@ function _seed_initial!(core::SolverCore, points, values)
         _commit_batch!(core, latent, evaluated)
     else
         converted = _validated_values(core, latent, values)
-        _commit_batch!(core, latent, converted; count_evaluations=false)
+        _commit_batch!(core, latent, converted; source=KnownObservation)
     end
     return core
 end

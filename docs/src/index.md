@@ -4,7 +4,8 @@ CurrentModule = SAMBO
 
 # SAMBO
 
-SAMBO is a Julia-native global black-box optimizer with SCE-UA, SMBO, and SHGO,
+SAMBO is a Julia-native global black-box optimizer with SCE-UA, SMBO, and
+iterative simplicial homology global optimization (SHGO),
 mixed-variable spaces, constraints, ask/tell operation, observation tables, and optional
 Makie plots.
 
@@ -37,6 +38,9 @@ state = init(Problem(space), SMBO(); maximum_evaluations=100)
 batch = ask!(state, 4)
 tell!(state, batch, map(expensive_measurement, batch))
 ```
+
+Partial completion, cancellation, failure recording, and restart are available through
+`tell!(state, batch, indices, values)`, `cancel!`, `fail!`, `checkpoint`, and `restore`.
 
 The detailed behavioral contracts live in
 [`spec/api.md`](https://github.com/D3MZ/SAMBO.jl/blob/main/spec/api.md),

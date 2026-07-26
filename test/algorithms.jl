@@ -1,7 +1,11 @@
 rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
 
 @testset "algorithms" begin
-    for algorithm in (SCEUA(), SMBO(candidate_pool=256), SHGO(samples=20))
+    for algorithm in (
+        SCEUA(),
+        SMBO(candidate_pool=256),
+        TopologicalMultistart(samples=20),
+    )
         result = solve(
             Problem(rosenbrock, Box([-2.0, -1.0], [2.0, 3.0])),
             algorithm;
@@ -12,6 +16,22 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
         @test retcode(result) == :evaluation_limit
         @test isfinite(minimum(result))
         @test all(0 .<= latentpoints(trace(result)) .<= 1)
+    end
+
+    for algorithm in (
+        SCEUA(),
+        SMBO(candidate_pool=32),
+        TopologicalMultistart(samples=6),
+    )
+        typed = solve(
+            Problem(x -> sum(abs2, x), Box(BigFloat[-1, -1], BigFloat[1, 1])),
+            algorithm;
+            objective_type=BigFloat,
+            maximum_evaluations=8,
+            rng=MersenneTwister(41),
+        )
+        @test eltype(latentpoints(trace(typed))) == BigFloat
+        @test eltype(objectivevalues(trace(typed))) == BigFloat
     end
 
     problem = Problem(SearchSpace(x=Continuous(-1.0, 1.0)))
@@ -53,9 +73,50 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
     invalid_objective = Problem(_ -> NaN, Box([0.0], [1.0]))
     @test_throws ArgumentError solve(invalid_objective, SMBO(); maximum_evaluations=1)
     @test_throws MethodError init(problem, SMBO(); misspelled_option=true)
-    @test SCEUA(reflection=1.0f0).reflection isa Float32
+    @test SCEUA(reflection=big"1.0").reflection isa BigFloat
     @test_throws ArgumentError init(problem, SMBO(candidate_pool=0))
-    @test_throws ArgumentError init(problem, SHGO(local_starts=0))
+    @test_throws ArgumentError init(problem, TopologicalMultistart(local_starts=0))
+    @test_throws ArgumentError SCEUA(complex_size=1)
+
+    @testset "SCE-UA kernels and repair" begin
+        @test SAMBO._complex_members(12, 3, 2) == [2, 5, 8, 11]
+        population = reshape(collect(1.0:12.0), 2, 6)
+        centroid = zeros(2)
+        members = [2, 4, 6]
+        SAMBO._complex_centroid!(centroid, population, members, 1)
+        @test centroid == (
+            population[:, 1] + population[:, 2] + population[:, 4]
+        ) / 3
+        reflected = zeros(2)
+        contracted = zeros(2)
+        SAMBO._reflection!(reflected, centroid, population[:, 6], 1.0)
+        SAMBO._contraction!(contracted, centroid, population[:, 6], 0.5)
+        @test reflected ≈ 2centroid - population[:, 6]
+        @test contracted ≈ 0.5 .* (centroid + population[:, 6])
+
+        constrained_problem = Problem(
+            x -> (x[1] - 0.9)^2,
+            Box([0.0], [1.0]);
+            constraint=x -> x[1] >= 0.8,
+        )
+        infeasible = [-1.0]
+        @test !SAMBO.repair!(
+            MersenneTwister(1),
+            infeasible,
+            SAMBO.ProjectToBounds(),
+            constrained_problem,
+            [0.9],
+        )
+        moving = [-1.0]
+        @test SAMBO.repair!(
+            MersenneTwister(1),
+            moving,
+            SAMBO.MoveTowardCentroid(),
+            constrained_problem,
+            [0.9],
+        )
+        @test moving[1] >= 0.8
+    end
 
     @testset "stopping, initialization, and parallel evaluation" begin
         events = Any[]
@@ -85,6 +146,43 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
         @test evaluation_count(known) == 4
         @test trace(known).count == 5
         @test minimum(known) == 0
+        known_rows = collect(observations(known))
+        @test known_rows[1].source == KnownObservation
+        @test known_rows[1].evaluation == 0
+        @test all(row -> row.source == InternalEvaluation, known_rows[2:end])
+        @test getproperty.(known_rows[2:end], :evaluation) == 1:4
+
+        snapshot_state = init(
+            Problem(SearchSpace(x=Continuous(0.0, 1.0))),
+            SMBO(initial_points=2);
+            maximum_evaluations=2,
+            rng=MersenneTwister(71),
+        )
+        snapshot_batch = ask!(snapshot_state, 1)
+        tell!(snapshot_state, snapshot_batch, [1.0])
+        frozen = result(snapshot_state)
+        next_batch = ask!(snapshot_state, 1)
+        tell!(snapshot_state, next_batch, [0.0])
+        @test trace(frozen).count == 1
+        @test minimum(frozen) == 1.0
+        @test trace(snapshot_state).count == 2
+        @test minimum(result(snapshot_state)) == 0.0
+
+        for (TX, TY) in ((Float64, Float64), (BigFloat, BigFloat))
+            typed_state = init(
+                Problem(Box(TX[-1], TX[1])),
+                SMBO();
+                objective_type=TY,
+                initial_points=[TX[0]],
+                initial_values=[TY(1.25)],
+                maximum_evaluations=1,
+                rng=MersenneTwister(72),
+            )
+            typed = result(typed_state)
+            @test eltype(latentpoints(trace(typed))) == TX
+            @test eltype(objectivevalues(trace(typed))) == TY
+            @test minimum(typed) == TY(1.25)
+        end
 
         serial = solve(
             Problem(x -> sum(abs2, x), Box(fill(-1.0, 3), fill(1.0, 3))),
@@ -121,6 +219,6 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
 
     @test_throws ArgumentError init(
         Problem(_ -> 0.0, SearchSpace(x=Choices(:a, :b))),
-        SHGO(),
+        TopologicalMultistart(),
     )
 end

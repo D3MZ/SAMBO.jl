@@ -19,7 +19,8 @@ function SCEUA(;
     population_tolerance=0.0,
 )
     complexes >= 0 || throw(ArgumentError("complexes must be nonnegative"))
-    complex_size >= 0 || throw(ArgumentError("complex_size must be nonnegative"))
+    complex_size == 0 || complex_size >= 2 ||
+        throw(ArgumentError("complex_size must be zero (automatic) or at least two"))
     isfinite(reflection) && reflection > 0 ||
         throw(ArgumentError("reflection must be finite and positive"))
     isfinite(contraction) && 0 < contraction <= 1 ||
@@ -36,9 +37,9 @@ function SCEUA(;
     )
 end
 
-mutable struct SCEUAWorkspace{T}
-    population::Matrix{T}
-    values::Vector{T}
+mutable struct SCEUAWorkspace{TX,TY}
+    population::Matrix{TX}
+    values::Vector{TY}
     initialized::Bool
 end
 
@@ -54,11 +55,12 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
     d = dimension(problem.space)
     complexes = algorithm.complexes == 0 ? clamp(d, 2, 5) : algorithm.complexes
     complex_size = algorithm.complex_size == 0 ? max(2d + 1, 5) : algorithm.complex_size
-    population_size = min(_remaining(core), complexes * complex_size)
-    T = eltype(core.trace.objective_values)
+    population_size = min(core.trace.count + _remaining(core), complexes * complex_size)
+    TX = eltype(core.trace.latent_points)
+    TY = eltype(core.trace.objective_values)
     workspace = SCEUAWorkspace(
-        Matrix{T}(undef, d, population_size),
-        Vector{T}(undef, population_size),
+        Matrix{TX}(undef, d, population_size),
+        Vector{TY}(undef, population_size),
         false,
     )
     return SCEUAState(core, algorithm, workspace)
@@ -66,50 +68,97 @@ end
 
 function _initialize_sceua!(state::SCEUAState)
     workspace = state.workspace
-    sample_count = size(workspace.population, 2)
-    _sample_feasible!(
-        state.core.rng,
-        workspace.population,
-        LatinHypercubeDesign(),
-        state.core.problem,
-    )
-    values = _evaluate_batch(state.core, workspace.population)
-    state.core.iteration += 1
-    _commit_batch!(state.core, workspace.population, values)
-    workspace.values .= values
+    population_count = size(workspace.population, 2)
+    trace = state.core.trace
+    initial_count = min(trace.count, population_count)
+    if initial_count > 0
+        initial_indices = partialsortperm(
+            _loss.(Ref(state.core.problem.sense), objectivevalues(trace)),
+            1:initial_count,
+        )
+        workspace.population[:, 1:initial_count] .=
+            @view trace.latent_points[:, initial_indices]
+        workspace.values[1:initial_count] .= trace.objective_values[initial_indices]
+    end
+    sample_count = population_count - initial_count
+    if sample_count > 0
+        sampled = @view workspace.population[:, initial_count+1:population_count]
+        _sample_feasible!(
+            state.core.rng,
+            sampled,
+            LatinHypercubeDesign(),
+            state.core.problem,
+        )
+        values = _evaluate_batch(state.core, sampled)
+        state.core.iteration += 1
+        _commit_batch!(state.core, sampled, values)
+        workspace.values[initial_count+1:population_count] .= values
+    end
     workspace.initialized = true
     return state
 end
 
-function _repair_proposal!(state::SCEUAState, proposal, centroid)
-    project!(proposal, state.core.problem.space)
-    _canonicalize!(proposal, state.core.problem.space)
-    isfeasible(state.core.problem, decode(state.core.problem.space, proposal)) && return proposal
-    policy = state.algorithm.repair
-    if policy isa MoveTowardCentroid
-        for fraction in (0.25, 0.5, 0.75, 0.9, 1.0)
-            @. proposal = (1 - fraction) * proposal + fraction * centroid
-            project!(proposal, state.core.problem.space)
-            _canonicalize!(proposal, state.core.problem.space)
-            isfeasible(state.core.problem, decode(state.core.problem.space, proposal)) &&
-                return proposal
-        end
-    elseif policy isa ProjectToBounds
-        return proposal
+function _project_feasible!(proposal, problem)
+    project!(proposal, problem.space)
+    return isfeasible(problem, decode(problem.space, proposal))
+end
+
+function repair!(rng, proposal, ::MoveTowardCentroid, problem, centroid)
+    original = copy(proposal)
+    _project_feasible!(proposal, problem) && return true
+    for fraction in (0.25, 0.5, 0.75, 0.9, 1.0)
+        @. proposal = (1 - fraction) * original + fraction * centroid
+        _project_feasible!(proposal, problem) && return true
     end
-    replacement = _sample_feasible(state.core, 1, UniformDesign())
-    proposal .= @view replacement[:, 1]
+    return false
+end
+
+function repair!(rng, proposal, ::RejectAndResample, problem, centroid)
+    buffer = reshape(proposal, :, 1)
+    try
+        _sample_feasible!(rng, buffer, UniformDesign(), problem)
+        return true
+    catch error
+        error isa InfeasibleSpaceError || rethrow()
+        return false
+    end
+end
+
+repair!(rng, proposal, ::ProjectToBounds, problem, centroid) =
+    _project_feasible!(proposal, problem)
+
+function _complex_members(population_size, complexes, complex_index)
+    return collect(complex_index:complexes:population_size)
+end
+
+function _complex_centroid!(centroid, population, members, global_best)
+    worst = members[end]
+    fill!(centroid, zero(eltype(centroid)))
+    count = 0
+    if !(global_best in members[1:end-1])
+        centroid .+= @view population[:, global_best]
+        count += 1
+    end
+    for member in @view members[1:end-1]
+        centroid .+= @view population[:, member]
+        count += 1
+    end
+    centroid ./= count
+    return centroid
+end
+
+function _reflection!(proposal, centroid, worst, coefficient)
+    @. proposal = centroid + coefficient * (centroid - worst)
     return proposal
 end
 
-function _complex_indices(population_size, complexes, complex_index)
-    indices = collect(complex_index:complexes:population_size)
-    if complex_index != 1 && !isempty(indices)
-        indices[1] = 1 # Retain SAMBO's global-best participation in every complex.
-        unique!(indices)
-    end
-    return indices
+function _contraction!(proposal, centroid, worst, coefficient)
+    @. proposal = worst + coefficient * (centroid - worst)
+    return proposal
 end
+
+_complex_indices(population_size, complexes, complex_index) =
+    _complex_members(population_size, complexes, complex_index)
 
 function _sceua_span(workspace)
     isempty(workspace.values) && return Inf
@@ -127,7 +176,9 @@ function step!(state::SCEUAState)
 
     core = state.core
     workspace = state.workspace
-    permutation = sortperm(workspace.values)
+    permutation = sortperm(
+        _loss.(Ref(core.problem.sense), workspace.values),
+    )
     workspace.population .= workspace.population[:, permutation]
     workspace.values .= workspace.values[permutation]
 
@@ -138,23 +189,29 @@ function step!(state::SCEUAState)
     complexes = min(requested_complexes, population_size)
     proposals = Matrix{eltype(workspace.population)}(undef, d, complexes)
     worst_indices = Vector{Int}(undef, complexes)
+    centroids = Matrix{eltype(workspace.population)}(undef, d, complexes)
     active = 0
     for complex_index in 1:complexes
-        indices = _complex_indices(population_size, complexes, complex_index)
+        indices = _complex_members(population_size, complexes, complex_index)
         length(indices) >= 2 || continue
-        simplex_count = min(d + 1, length(indices))
-        simplex_indices = indices[1:simplex_count]
-        worst_index = simplex_indices[end]
-        centroid = vec(mean(@view(workspace.population[:, simplex_indices[1:end-1]]); dims=2))
+        worst_index = indices[end]
         active += 1
         proposal = @view proposals[:, active]
+        centroid = @view centroids[:, active]
+        _complex_centroid!(centroid, workspace.population, indices, 1)
         worst = @view workspace.population[:, worst_index]
-        @. proposal = centroid + state.algorithm.reflection * (centroid - worst)
-        _repair_proposal!(state, proposal, centroid)
+        _reflection!(proposal, centroid, worst, state.algorithm.reflection)
+        repair!(
+            core.rng,
+            proposal,
+            state.algorithm.repair,
+            core.problem,
+            centroid,
+        ) || (active -= 1; continue)
         worst_indices[active] = worst_index
     end
     active = min(active, _remaining(core))
-    active == 0 && (core.retcode = :evaluation_limit; return state)
+    active == 0 && (core.retcode = :infeasible_space; return state)
     proposals = @view proposals[:, 1:active]
     worst_indices = @view worst_indices[1:active]
     reflection_values = _evaluate_batch(core, proposals)
@@ -164,7 +221,11 @@ function step!(state::SCEUAState)
     failed = Int[]
     for index in 1:active
         population_index = worst_indices[index]
-        if reflection_values[index] < workspace.values[population_index]
+        if _isbetter(
+            core.problem,
+            reflection_values[index],
+            workspace.values[population_index],
+        )
             workspace.population[:, population_index] .= @view proposals[:, index]
             workspace.values[population_index] = reflection_values[index]
         else
@@ -179,17 +240,32 @@ function step!(state::SCEUAState)
         for (output_index, failed_index) in enumerate(@view failed[1:contraction_count])
             population_index = worst_indices[failed_index]
             worst = @view workspace.population[:, population_index]
-            reflected = @view proposals[:, failed_index]
             proposal = @view contractions[:, output_index]
-            @. proposal = worst + state.algorithm.contraction * (reflected - worst)
-            _repair_proposal!(state, proposal, worst)
+            centroid = @view centroids[:, failed_index]
+            _contraction!(
+                proposal,
+                centroid,
+                worst,
+                state.algorithm.contraction,
+            )
+            repair!(
+                core.rng,
+                proposal,
+                state.algorithm.repair,
+                core.problem,
+                centroid,
+            ) || (proposal .= worst)
         end
         contraction_values = _evaluate_batch(core, contractions)
         _commit_batch!(core, contractions, contraction_values)
         for output_index in 1:contraction_count
             failed_index = failed[output_index]
             population_index = worst_indices[failed_index]
-            if contraction_values[output_index] < workspace.values[population_index]
+            if _isbetter(
+                core.problem,
+                contraction_values[output_index],
+                workspace.values[population_index],
+            )
                 workspace.population[:, population_index] .= @view contractions[:, output_index]
                 workspace.values[population_index] = contraction_values[output_index]
                 failed[output_index] = 0
@@ -222,12 +298,18 @@ end
 function solve!(state::SCEUAState)
     isnothing(state.core.problem.objective) &&
         throw(ArgumentError("solve! requires an objective"))
-    while !_finished(state.core)
-        step!(state)
+    try
+        while !_finished(state.core)
+            step!(state)
+        end
+    catch error
+        error isa InfeasibleSpaceError || rethrow()
+        state.core.retcode = :infeasible_space
     end
     return result(state)
 end
 solve(problem::Problem, algorithm::SCEUA; kwargs...) = solve!(init(problem, algorithm; kwargs...))
+trace(state::SCEUAState) = state.core.trace
 result(state::SCEUAState) = _result(
     state.core,
     state.algorithm;

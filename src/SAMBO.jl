@@ -30,16 +30,28 @@ function evaluationsplot end
 function evaluationsplot! end
 function SAMBOTuning end
 
-export Problem, Result, Trace, StopCriteria, ProgressEvent
+export Problem, Result, Trace, StopCriteria, ProgressEvent, ObservationSource
+export KnownObservation, InternalEvaluation, ExternalEvaluation
+export OptimizationSense, Minimize, Maximize
+export NonfinitePolicy, ErrorOnNonfinite, PenalizeNonfinite, AllowInfinite
+export NumericalFailureError
 export Box, SearchSpace, Continuous, Choices
-export SMBO, SCEUA, SHGO, Serial, Threaded, CandidateBatch
+export SMBO, SCEUA, SHGO, TopologicalMultistart, Serial, Threaded, CandidateBatch
 export UniformDesign, LatinHypercubeDesign, HaltonDesign, SobolDesign
 export GaussianProcessSurrogate, LowerConfidenceBound
+export EnsembleSurrogate
 export UniformCandidates, GlobalLocalCandidates
-export minimize, init, solve, solve!, step!, ask!, tell!, result
+export AvoidRepeatedEvaluations, AllowRepeatedEvaluations
+export GreedyBatch, LocalPenalization, space_cardinality
+export minimize, init, solve, solve!, step!, ask!, tell!, cancel!, fail!, result
+export checkpoint, restore, SMBOCheckpoint
+export refine_sampling!, update_complex!, local_minimum_candidates
+export homology_rank, homology_rank_differential, update_minimizer_pool!
+export local_minimize!
 export minimizer, minimum, trace, retcode, evaluation_count, iteration_count
 export fittedmodel
 export observations, latentpoints, objectivevalues, encode, decode
+export constraint_violation, isfeasible
 export convergencedata, regretdata, partialdependence, evaluationsdata
 export convergenceplot, convergenceplot!, regretplot, regretplot!
 export objectiveplot, objectiveplot!, evaluationsplot, evaluationsplot!

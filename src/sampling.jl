@@ -1,20 +1,47 @@
 abstract type AbstractDesign end
+struct InfeasibleSpaceError <: Exception
+    requested::Int
+    attempts::Int
+end
+function Base.showerror(io::IO, error::InfeasibleSpaceError)
+    print(
+        io,
+        "unable to sample ",
+        error.requested,
+        " feasible points in ",
+        error.attempts,
+        " attempts",
+    )
+end
 struct UniformDesign <: AbstractDesign end
 struct LatinHypercubeDesign <: AbstractDesign end
 struct HaltonDesign <: AbstractDesign
     skip::Int
 end
-HaltonDesign(; skip=20) = HaltonDesign(skip)
+function HaltonDesign(; skip=20)
+    skip >= 0 || throw(ArgumentError("Halton skip must be nonnegative"))
+    return HaltonDesign(skip)
+end
 struct SobolDesign <: AbstractDesign
     skip::Int
 end
-SobolDesign(; skip=0) = SobolDesign(skip)
+function SobolDesign(; skip=0)
+    skip >= 0 || throw(ArgumentError("Sobol skip must be nonnegative"))
+    return SobolDesign(skip)
+end
+
+function _canonicalize_samples!(destination, space)
+    for column in axes(destination, 2)
+        _canonicalize!(@view(destination[:, column]), space)
+    end
+    return destination
+end
 
 function sample!(rng, destination::AbstractMatrix, ::UniformDesign, space)
     size(destination, 1) == dimension(space) ||
         throw(DimensionMismatch("sample matrix and space differ in dimension"))
     Random.rand!(rng, destination)
-    return destination
+    return _canonicalize_samples!(destination, space)
 end
 
 function sample!(rng, destination::AbstractMatrix{T}, ::LatinHypercubeDesign, space) where {T}
@@ -27,10 +54,11 @@ function sample!(rng, destination::AbstractMatrix{T}, ::LatinHypercubeDesign, sp
         QuasiMonteCarlo.LatinHypercubeSample(rng=rng),
         T,
     )
-    return destination
+    return _canonicalize_samples!(destination, space)
 end
 
 function sample!(rng, destination::AbstractMatrix{T}, design::HaltonDesign, space) where {T}
+    design.skip >= 0 || throw(ArgumentError("Halton skip must be nonnegative"))
     d, n = size(destination)
     d == dimension(space) || throw(DimensionMismatch("sample matrix and space differ in dimension"))
     n == 0 && return destination
@@ -43,10 +71,11 @@ function sample!(rng, destination::AbstractMatrix{T}, design::HaltonDesign, spac
         T,
     )
     destination .= @view sequence[:, design.skip+1:end]
-    return destination
+    return _canonicalize_samples!(destination, space)
 end
 
 function sample!(rng, destination::AbstractMatrix{T}, design::SobolDesign, space) where {T}
+    design.skip >= 0 || throw(ArgumentError("Sobol skip must be nonnegative"))
     d, n = size(destination)
     d == dimension(space) || throw(DimensionMismatch("sample matrix and space differ in dimension"))
     n == 0 && return destination
@@ -59,7 +88,7 @@ function sample!(rng, destination::AbstractMatrix{T}, design::SobolDesign, space
         T,
     )
     destination .= @view sequence[:, design.skip+1:end]
-    return destination
+    return _canonicalize_samples!(destination, space)
 end
 
 function _sample_feasible!(rng, destination, sampler, problem; maximum_attempts=max(1000, 100size(destination, 2)))
@@ -84,5 +113,5 @@ function _sample_feasible!(rng, destination, sampler, problem; maximum_attempts=
             attempts >= maximum_attempts && break
         end
     end
-    throw(ArgumentError("unable to sample $requested feasible points in $maximum_attempts attempts"))
+    throw(InfeasibleSpaceError(requested, maximum_attempts))
 end

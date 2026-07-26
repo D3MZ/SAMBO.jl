@@ -56,4 +56,71 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
     @test SCEUA(reflection=1.0f0).reflection isa Float32
     @test_throws ArgumentError init(problem, SMBO(candidate_pool=0))
     @test_throws ArgumentError init(problem, SHGO(local_starts=0))
+
+    @testset "stopping, initialization, and parallel evaluation" begin
+        events = Any[]
+        callback_result = minimize(
+            x -> x[1]^2,
+            Box([-1.0], [1.0]);
+            algorithm=SMBO(candidate_pool=32),
+            maximum_evaluations=20,
+            callback=event -> (push!(events, event); event.evaluation == 3),
+            rng=MersenneTwister(12),
+        )
+        @test retcode(callback_result) == :callback_stop
+        @test evaluation_count(callback_result) == 3
+        @test length(events) == 3
+        @test events[end] isa Sambo.ProgressEvent
+        @test all(event -> isfinite(event.best_value), events)
+
+        known = minimize(
+            x -> abs2(x[1] - 0.25),
+            Box([0.0], [1.0]);
+            algorithm=SMBO(candidate_pool=32),
+            initial_points=[[0.25]],
+            initial_values=[0.0],
+            maximum_evaluations=4,
+            rng=MersenneTwister(7),
+        )
+        @test evaluation_count(known) == 4
+        @test trace(known).count == 5
+        @test minimum(known) == 0
+
+        serial = solve(
+            Problem(x -> sum(abs2, x), Box(fill(-1.0, 3), fill(1.0, 3))),
+            SCEUA();
+            maximum_evaluations=24,
+            rng=MersenneTwister(22),
+            executor=Serial(),
+        )
+        threaded = solve(
+            Problem(x -> sum(abs2, x), Box(fill(-1.0, 3), fill(1.0, 3))),
+            SCEUA();
+            maximum_evaluations=24,
+            rng=MersenneTwister(22),
+            executor=Threaded(),
+        )
+        @test latentpoints(trace(serial)) == latentpoints(trace(threaded))
+        @test objectivevalues(trace(serial)) == objectivevalues(trace(threaded))
+    end
+
+    @testset "out-of-order ask/tell" begin
+        state = init(
+            Problem(SearchSpace(x=Continuous(0.0, 1.0))),
+            SMBO(initial_points=2, candidate_pool=32);
+            maximum_evaluations=4,
+            rng=MersenneTwister(9),
+        )
+        first_batch = ask!(state, 2)
+        second_batch = ask!(state, 2)
+        tell!(state, second_batch, [point.x^2 for point in second_batch])
+        tell!(state, first_batch, [point.x^2 for point in first_batch])
+        @test evaluation_count(result(state)) == 4
+        @test retcode(result(state)) == :evaluation_limit
+    end
+
+    @test_throws ArgumentError init(
+        Problem(_ -> 0.0, SearchSpace(x=Choices(:a, :b))),
+        SHGO(),
+    )
 end

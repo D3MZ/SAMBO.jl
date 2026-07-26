@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use Sambo.jl in research, please cite the software and the relevant algorithm references."
+title: "Sambo.jl: Julia-native global black-box optimization"
+type: software
+authors:
+  - family-names: Michael
+    given-names: Demetrius
+version: "0.1.0-DEV"
+date-released: 2026-07-26
+repository-code: "https://github.com/D3MZ/Sambo.jl"
+url: "https://D3MZ.github.io/Sambo.jl/dev/"
+license: MIT
+keywords:
+  - black-box optimization
+  - global optimization
+  - Bayesian optimization
+  - SCE-UA
+  - SMBO
+  - SHGO
+  - Julia

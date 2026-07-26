@@ -1,4 +1,10 @@
 [deps]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+MLJTuning = "03970b2e-30c4-11ea-3135-d1576263f10f"
+OptimizationBase = "bca83a33-5cc9-4baa-983d-23429ab6bcbb"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Sambo = "bceef165-f388-4bd3-ba8d-0d00d2b9f72f"
+SurrogatesBase = "89f642e6-4179-4274-8202-c11f4bd9a72c"
 Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

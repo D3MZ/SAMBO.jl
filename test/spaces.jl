@@ -24,4 +24,20 @@
     @test_throws ArgumentError encode(space, (count=1, rate=1.1))
     @test_throws DimensionMismatch decode(space, [0.0, 0.0, 0.0, 0.0])
     @test_throws ArgumentError SearchSpace(x=1:0)
+
+    float32_box = Box(Float32[-1, 0], Float32[1, 2])
+    @test Sambo.latenttype(float32_box) == Float32
+    @test eltype(encode(float32_box, Float32[0, 1])) == Float32
+
+    for design in (
+        Sambo.UniformDesign(),
+        Sambo.LatinHypercubeDesign(),
+        Sambo.HaltonDesign(),
+        Sambo.SobolDesign(),
+    )
+        samples = Matrix{Float64}(undef, 2, 16)
+        Sambo.sample!(MersenneTwister(1), samples, design, box)
+        @test all(0 .<= samples .<= 1)
+        @test size(samples) == (2, 16)
+    end
 end

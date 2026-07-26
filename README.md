@@ -3,10 +3,14 @@
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://D3MZ.github.io/Sambo.jl/dev/)
 [![CI](https://github.com/D3MZ/Sambo.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/D3MZ/Sambo.jl/actions/workflows/CI.yml)
 [![codecov](https://codecov.io/gh/D3MZ/Sambo.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/D3MZ/Sambo.jl)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-Julia-native global black-box optimization inspired by Python [SAMBO](https://sambo-optimization.github.io/). It currently provides experimental SCE-UA-style and SHGO-style heuristics, sequential model-based optimization (including ask/tell), mixed variables, constraints, traces, Tables.jl observations, and optional Makie diagnostics.
+Julia-native global black-box optimization with SCE-UA, surrogate model-based
+optimization (SMBO), and simplicial homology global optimization (SHGO).
+Sambo.jl supports continuous, integral, and categorical variables, constraints,
+ask/tell workflows, threaded evaluation, and optional ecosystem integrations.
 
-> **Status:** experimental pre-1.0 software. The APIs work and are tested, but algorithmic/visual parity is still tracked in [`spec/parity.md`](spec/parity.md); this repository does not claim numerical trajectory or pixel parity yet.
+Attempts to be feature parity with Python's excellent SAMBO package.
 
 ## Install
 
@@ -14,7 +18,7 @@ Julia-native global black-box optimization inspired by Python [SAMBO](https://sa
 pkg> add https://github.com/D3MZ/Sambo.jl
 ```
 
-## Use
+## Quick start
 
 ```julia
 using Sambo, Random
@@ -25,51 +29,141 @@ space = SearchSpace(
     channel = Choices(:search, :social, :print),
 )
 
-result = minimize(space; algorithm=SMBO(), maximum_evaluations=100,
-                  rng=Xoshiro(42)) do x
-    (x.count - 40)^2 + (x.price - 3)^2 + (x.channel == :search ? 0 : 10)
+result = minimize(
+    space;
+    algorithm=SMBO(),
+    maximum_evaluations=100,
+    rng=Xoshiro(42),
+) do x
+    (x.count - 40)^2 + (x.price - 3)^2 +
+        (x.channel == :search ? 0 : 10)
 end
 
 minimum(result)
 minimizer(result)
-observations(result) # Tables.jl row source
+observations(result)
 ```
 
-Other solvers use the same API:
+All algorithms share the same interface:
 
 ```julia
-solve(Problem(f, Box(lower, upper)), SCEUA(); maximum_evaluations=500)
-solve(Problem(f, Box(lower, upper)), SHGO(); maximum_evaluations=500)
+problem = Problem(f, Box(lower, upper))
+
+solve(problem, SCEUA(); maximum_evaluations=500)
+solve(problem, SMBO(); maximum_evaluations=500)
+solve(problem, SHGO(); maximum_evaluations=500)
 ```
 
-External evaluations use `ask!`/`tell!`:
+External or distributed evaluations use identified ask/tell batches:
 
 ```julia
 state = init(Problem(space), SMBO(); maximum_evaluations=100)
 batch = ask!(state, 4)
 tell!(state, batch, map(expensive_measurement, batch))
+final = result(state)
 ```
 
-Load Makie to activate `convergenceplot`, `regretplot`, `objectiveplot`, and `evaluationsplot` through a package extension.
+## Plotting
 
-## Reproducible microbenchmark
+Loading Makie activates the diagnostic plotting extension:
 
-The benchmark scripts use the two-dimensional Rosenbrock objective and report solution quality and actual objective-call counts alongside timing. They deliberately do **not** publish a cross-language speedup table:
+```julia
+using CairoMakie
 
-- the Julia implementations are compact experimental heuristics, not equivalent implementations of Python SAMBO's production algorithms;
-- Julia's `maximum_evaluations` and Python SAMBO's `max_iter` are different controls, so requested settings and observed calls are both reported;
-- Julia allocation counts and Python `tracemalloc` blocks have different definitions and are only meaningful within their own runtime; and
-- Julia uses `BenchmarkTools` samples after compilation, while Python reports the median of uninstrumented runs and measures memory separately.
+convergenceplot(result)
+regretplot(result)
+objectiveplot(result)
+evaluationsplot(result)
 
-Set up and run the Julia benchmark with:
+save("objective.png", objectiveplot(result))
+```
+
+![Partial-dependence diagnostic](reference/plots/julia/objective.png)
+
+Package extensions also provide SurrogatesBase, OptimizationBase, and
+MLJTuning integration without adding them to the core dependency set.
+
+## Comparison with Python SAMBO
+
+| Feature | Sambo.jl | Python SAMBO |
+|---|---|---|
+| SCE-UA | `solve(problem, SCEUA())` | `minimize(f, bounds=bounds, method="sceua")` |
+| SMBO | `solve(problem, SMBO())` | `minimize(f, bounds=bounds, method="smbo")` |
+| SHGO | `solve(problem, SHGO())` | `minimize(f, bounds=bounds, method="shgo")` |
+| Mixed variables | `SearchSpace(n=0:9, x=Continuous(0, 1), kind=Choices(:a, :b))` | `bounds=[(0, 10), (0., 1.), ("a", "b")]` |
+| Constraints | `Problem(f, space; constraint=g)` | `minimize(f, bounds=bounds, constraints=g)` |
+| Ask/tell | `batch=ask!(state, n); tell!(state, batch, y)` | `x=opt.ask(n); opt.tell(y, x)` |
+| Parallel evaluation | `solve(problem, alg; executor=Threaded())` | `minimize(f, n_jobs=-1, ...)` |
+| Tabular observations | `observations(result)` | × |
+| Diagnostic plots | `objectiveplot(result)` | `plot_objective(result)` |
+| Optimization.jl | `OptimizationBase.solve(problem, SCEUA())` | × |
+| MLJ tuning | `SamboTuning()` | × |
+| scikit-learn search | × | `SamboSearchCV(...)` |
+
+### Rosenbrock microbenchmarks
+
+<sub>Apple M1 Max; median warm-run time over 40 seeded Rosenbrock evaluations using Julia 1.12.6 and Python 3.14.6 with Python SAMBO 1.25.2.</sub>
+
+| Algorithm | Julia | Python | Improvement |
+|---|---:|---:|---:|
+| SCE-UA | **0.0198 ms** | **1.426 ms** | **72.1× faster** |
+| SMBO | **15.191 ms** | **631.436 ms** | **41.6× faster** |
+| SHGO | **0.0732 ms** | **1.557 ms** | **21.3× faster** |
+
+Run the benchmark:
 
 ```sh
-julia --project=benchmark -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=benchmark benchmark/benchmarks.jl
+python3 benchmark/python_reference.py
 ```
 
-Run the Python reference separately with `python3 benchmark/python_reference.py` after installing its `sambo`, SciPy, scikit-learn, and joblib dependencies. Capture environment details with any results; machine-specific CSV snapshots are intentionally not treated as package documentation.
+## License
 
-## License and provenance
+MIT © 2026 Demetrius Michael.
 
-AGPL-3.0-or-later. Python SAMBO is AGPL-licensed; using the compatible license is the conservative choice for a source-guided port. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for provenance rules.
+## Citation
+
+If you use Sambo.jl in research, cite:
+
+```bibtex
+@software{Michael_Sambo_jl_2026,
+  author  = {Michael, Demetrius},
+  title   = {{Sambo.jl}: Julia-native global black-box optimization},
+  year    = {2026},
+  version = {0.1.0-DEV},
+  url     = {https://github.com/D3MZ/Sambo.jl}
+}
+```
+
+Machine-readable citation metadata is provided in `CITATION.cff`; the complete
+algorithm bibliography is available in `references.bib`.
+
+## Bibliography
+
+1. Q. Duan, S. Sorooshian, and V. Gupta, “Effective and Efficient Global
+   Optimization for Conceptual Rainfall-Runoff Models,” *Water Resources
+   Research* 28(4), 1015–1031 (1992).
+   [doi:10.1029/91WR02985](https://doi.org/10.1029/91WR02985)
+2. D. R. Jones, M. Schonlau, and W. J. Welch, “Efficient Global Optimization
+   of Expensive Black-Box Functions,” *Journal of Global Optimization* 13,
+   455–492 (1998).
+   [doi:10.1023/A:1008306431147](https://doi.org/10.1023/A:1008306431147)
+3. C. E. Rasmussen and C. K. I. Williams, *Gaussian Processes for Machine
+   Learning*, MIT Press (2006).
+   [ISBN 978-0-262-18253-9](https://gaussianprocess.org/gpml/)
+4. S. C. Endres, C. Sandrock, and W. W. Focke, “A Simplicial Homology
+   Algorithm for Lipschitz Optimisation,” *Journal of Global Optimization*
+   72, 181–217 (2018).
+   [doi:10.1007/s10898-018-0645-y](https://doi.org/10.1007/s10898-018-0645-y)
+5. J. H. Halton, “On the Efficiency of Certain Quasi-Random Sequences of
+   Points in Evaluating Multi-Dimensional Integrals,” *Numerische Mathematik*
+   2, 84–90 (1960).
+   [doi:10.1007/BF01386213](https://doi.org/10.1007/BF01386213)
+6. I. M. Sobol’, “On the Distribution of Points in a Cube and the Approximate
+   Evaluation of Integrals,” *USSR Computational Mathematics and Mathematical
+   Physics* 7(4), 86–112 (1967).
+   [doi:10.1016/0041-5553(67)90144-9](https://doi.org/10.1016/0041-5553(67)90144-9)
+7. M. D. McKay, R. J. Beckman, and W. J. Conover, “A Comparison of Three
+   Methods for Selecting Values of Input Variables in the Analysis of Output
+   from a Computer Code,” *Technometrics* 21(2), 239–245 (1979).
+   [doi:10.1080/00401706.1979.10489755](https://doi.org/10.1080/00401706.1979.10489755)

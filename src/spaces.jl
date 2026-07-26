@@ -56,6 +56,8 @@ SearchSpace(; kwargs...) = SearchSpace(Tuple(keys(kwargs)), Tuple(values(kwargs)
 
 dimension(space::Box) = length(space.lower)
 dimension(space::SearchSpace) = length(space.dimensions)
+latenttype(space::Box{T}) where {T} = T
+latenttype(::SearchSpace) = Float64
 
 @inline _decode(d::Continuous, z) = d.lower + z * (d.upper - d.lower)
 @inline function _decode(d::AbstractRange, z)
@@ -106,12 +108,46 @@ function encode(space::SearchSpace, point)
         Tuple(point)
     end
     length(values) == dimension(space) || throw(DimensionMismatch("point and search space differ in dimension"))
-    [Float64(_encode(space.dimensions[i], values[i])) for i in eachindex(space.dimensions)]
+    [latenttype(space)(_encode(space.dimensions[i], values[i])) for i in eachindex(space.dimensions)]
 end
-function project!(z)
+function encode!(destination, space, point)
+    length(destination) == dimension(space) ||
+        throw(DimensionMismatch("destination and search space differ in dimension"))
+    destination .= encode(space, point)
+    return destination
+end
+function project!(z, space=nothing)
     clamp!(z, zero(eltype(z)), one(eltype(z)))
     return z
 end
+_canonicalize!(z, ::Box) = z
+function _canonicalize!(z, space::SearchSpace)
+    for index in eachindex(space.dimensions)
+        dimension = space.dimensions[index]
+        if dimension isa AbstractRange || dimension isa Choices
+            z[index] = _encode(dimension, _decode(dimension, z[index]))
+        end
+    end
+    return z
+end
+
+function modelmatrix!(destination, space, points)
+    size(destination) == size(points) ||
+        throw(DimensionMismatch("model matrix and latent points differ in size"))
+    destination .= points
+    return destination
+end
+active_dimensions(space::Box) = findall(i -> space.lower[i] != space.upper[i], eachindex(space.lower))
+function active_dimensions(space::SearchSpace)
+    findall(eachindex(space.dimensions)) do i
+        d = space.dimensions[i]
+        d isa Continuous ? d.lower != d.upper :
+        d isa AbstractRange ? length(d) > 1 :
+        d isa Choices ? length(d.values) > 1 : true
+    end
+end
+dimensionlabel(space, i) = _dimensionlabel(space, i)
+dimensionticks(space, i) = _dimensionticks(space, i)
 
 _dimensionlabel(::Box, i) = "x$i"
 _dimensionlabel(space::SearchSpace, i) = isnothing(space.names) ? "x$i" : string(space.names[i])

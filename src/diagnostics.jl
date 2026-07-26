@@ -31,9 +31,10 @@ function evaluationsdata(result::Result; dimensions=1:dimension(result.space))
     )
 end
 
-"Compute one- or two-dimensional RBF partial dependence from the result trace."
+"Compute one- or two-dimensional partial dependence from a fitted surrogate."
 function partialdependence(
     result::Result;
+    model=fittedmodel(result),
     dimensions=(1,),
     resolution=40,
     samples=min(128, evaluation_count(result)),
@@ -43,6 +44,14 @@ function partialdependence(
     length(dims) in (1, 2) || throw(ArgumentError("select one or two dimensions"))
     resolution > 1 || throw(ArgumentError("resolution must exceed one"))
     samples > 0 || throw(ArgumentError("samples must be positive and the trace must be nonempty"))
+    if isnothing(model)
+        model = fitmodel(
+            GaussianProcessSurrogate(),
+            latentpoints(result.trace),
+            objectivevalues(result.trace),
+            rng,
+        )
+    end
 
     grids = ntuple(_ -> collect(range(0, 1; length=resolution)), length(dims))
     base = rand(rng, dimension(result.space), samples)
@@ -53,7 +62,8 @@ function partialdependence(
             block = (i - 1) * samples + 1:i * samples
             queries[dims[1], block] .= grids[1][i]
         end
-        predictions, _ = _rbf_predict(result.trace, queries)
+        predictions = Vector{eltype(result.trace.objective_values)}(undef, size(queries, 2))
+        predictmean!(predictions, model, queries)
         for i in 1:resolution
             block = (i - 1) * samples + 1:i * samples
             values[i] = mean(@view predictions[block])
@@ -67,7 +77,8 @@ function partialdependence(
             queries[dims[1], block] .= grids[1][i]
             queries[dims[2], block] .= grids[2][j]
         end
-        predictions, _ = _rbf_predict(result.trace, queries)
+        predictions = Vector{eltype(result.trace.objective_values)}(undef, size(queries, 2))
+        predictmean!(predictions, model, queries)
         block_number = 0
         for j in 1:resolution, i in 1:resolution
             block_number += 1

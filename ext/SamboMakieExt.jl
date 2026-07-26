@@ -4,151 +4,533 @@ using Sambo
 using Makie
 using Random
 
+const _PYTHON_COLORS = (
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+    "#9467bd", "#8c564b", "#e377c2",
+)
+const _MARKERS = (:circle, :rect, :xcross, :diamond, :dtriangle, :cross, :utriangle)
+const _FACET_SIZE = 170
+const _MATRIX_PANEL_SIZE = 130
+const _MATRIX_COLUMN_STEP = 150
+const _MATRIX_ROW_STEP = 156
+
 _results(result::Sambo.Result) = (result,)
 _results(results) = Tuple(results)
-
-function _labels(labels, n)
-    isnothing(labels) && return nothing
+_resultlabels(labels, count) = isnothing(labels) ? nothing : begin
     collected = collect(labels)
-    length(collected) == n || throw(DimensionMismatch("one label per result is required"))
-    return collected
+    length(collected) == count ||
+        throw(DimensionMismatch("one label per result is required"))
+    collected
+end
+_plotscale(scale) = scale in (:log, :symlog) ? Symlog10(1) :
+    scale in (:linear, identity) ? identity : scale
+
+function _trace_axis(position; title, xlabel, ylabel, xscale=identity, yscale=identity, axis=(;))
+    defaults = (
+        title=title,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        xscale=_plotscale(xscale),
+        yscale=_plotscale(yscale),
+        xgridvisible=true,
+        ygridvisible=true,
+        xgridcolor=(:gray, 0.45),
+        ygridcolor=(:gray, 0.45),
+        xgridwidth=0.8,
+        ygridwidth=0.8,
+        titlesize=16,
+        titlefont=:regular,
+        xlabelsize=14,
+        ylabelsize=14,
+        xticklabelsize=12,
+        yticklabelsize=12,
+    )
+    return Axis(position; merge(defaults, axis)...)
 end
 
-function Sambo.convergenceplot(results; labels=nothing, optimum=nothing, axis=(;), figure=(;))
-    fig = Figure(; figure...)
-    ax = Axis(fig[1, 1]; xlabel="Evaluations", ylabel="Best objective", axis...)
+function _trace_series!(axis, result, index, label, data)
+    color = _PYTHON_COLORS[mod1(index, length(_PYTHON_COLORS))]
+    marker = _MARKERS[mod1(index, length(_MARKERS))]
+    lines!(
+        axis,
+        data.evaluations,
+        data.values;
+        color=(color, 0.7),
+        linestyle=:dash,
+        linewidth=2,
+        label=label,
+    )
+    count = length(data.evaluations)
+    stride = max(1, round(Int, count / 5))
+    marker_indices = collect(1:stride:count)
+    scatter!(
+        axis,
+        data.evaluations[marker_indices],
+        data.values[marker_indices];
+        color=(color, 0.7),
+        marker=marker,
+        markersize=8,
+    )
+end
+
+function Sambo.convergenceplot(
+    results;
+    labels=nothing,
+    optimum=nothing,
+    xscale=identity,
+    yscale=identity,
+    scale=yscale,
+    axis=(;),
+    figure=(;),
+)
+    fig = Figure(; merge((size=(640, 480),), figure)...)
+    ax = _trace_axis(
+        fig[1, 1];
+        title="Convergence",
+        xlabel="Number of function evaluations n",
+        ylabel="min f(x) after n evaluations",
+        xscale,
+        yscale=scale,
+        axis,
+    )
     Sambo.convergenceplot!(ax, results; labels, optimum)
     return fig
 end
 
-function Sambo.convergenceplot!(ax, results; labels=nothing, optimum=nothing)
+function Sambo.convergenceplot!(axis, results; labels=nothing, optimum=nothing)
     result_tuple = _results(results)
-    plot_labels = _labels(labels, length(result_tuple))
-    for (i, result) in pairs(result_tuple)
-        data = Sambo.convergencedata(result)
-        label = isnothing(plot_labels) ? nothing : plot_labels[i]
-        lines!(ax, data.evaluations, data.best; label)
+    isempty(result_tuple) && throw(ArgumentError("at least one result is required"))
+    plot_labels = _resultlabels(labels, length(result_tuple))
+    for (index, result) in pairs(result_tuple)
+        convergence = Sambo.convergencedata(result)
+        label = isnothing(plot_labels) ?
+            (length(result_tuple) > 1 ? "#$index" : nothing) : plot_labels[index]
+        _trace_series!(
+            axis,
+            result,
+            index,
+            label,
+            (evaluations=convergence.evaluations, values=convergence.best),
+        )
     end
-    !isnothing(optimum) && hlines!(ax, [optimum]; linestyle=:dash, color=:black)
-    !isnothing(plot_labels) && axislegend(ax)
-    return ax
+    if !isnothing(optimum)
+        hlines!(
+            axis,
+            [optimum];
+            color=:black,
+            linestyle=:dash,
+            linewidth=1,
+            label="True minimum",
+        )
+    end
+    maximum_evaluation = maximum(
+        Sambo.evaluation_count(result) for result in result_tuple
+    )
+    tick_step = max(1, round(Int, maximum_evaluation / 9))
+    axis.xticks = 0:tick_step:(maximum_evaluation + tick_step)
+    (!isnothing(optimum) || !isnothing(plot_labels) || length(result_tuple) > 1) &&
+        axislegend(axis; position=:rt)
+    return axis
 end
 
-function Sambo.regretplot(results; labels=nothing, optimum=nothing, axis=(;), figure=(;))
-    fig = Figure(; figure...)
-    ax = Axis(fig[1, 1]; xlabel="Evaluations", ylabel="Cumulative regret", axis...)
+function Sambo.regretplot(
+    results;
+    labels=nothing,
+    optimum=nothing,
+    xscale=identity,
+    yscale=identity,
+    scale=yscale,
+    axis=(;),
+    figure=(;),
+)
+    fig = Figure(; merge((size=(640, 480),), figure)...)
+    ax = _trace_axis(
+        fig[1, 1];
+        title="Cumulative regret",
+        xlabel="Number of function evaluations n",
+        ylabel="Cumulative regret after n evaluations:  Σₜⁿ [f(xₜ) − fₒₚₜ]",
+        xscale,
+        yscale=scale,
+        axis,
+    )
     Sambo.regretplot!(ax, results; labels, optimum)
     return fig
 end
 
-function Sambo.regretplot!(ax, results; labels=nothing, optimum=nothing)
+function Sambo.regretplot!(axis, results; labels=nothing, optimum=nothing)
     result_tuple = _results(results)
     isempty(result_tuple) && throw(ArgumentError("at least one result is required"))
     reference = isnothing(optimum) ? minimum(Sambo.minimum, result_tuple) : optimum
-    plot_labels = _labels(labels, length(result_tuple))
-    for (i, result) in pairs(result_tuple)
-        data = Sambo.regretdata(result; optimum=reference)
-        label = isnothing(plot_labels) ? nothing : plot_labels[i]
-        lines!(ax, data.evaluations, data.regret; label)
+    plot_labels = _resultlabels(labels, length(result_tuple))
+    for (index, result) in pairs(result_tuple)
+        regret = Sambo.regretdata(result; optimum=reference)
+        label = isnothing(plot_labels) ?
+            (length(result_tuple) > 1 ? "#$index" : nothing) : plot_labels[index]
+        _trace_series!(
+            axis,
+            result,
+            index,
+            label,
+            (evaluations=regret.evaluations, values=regret.regret),
+        )
     end
-    !isnothing(plot_labels) && axislegend(ax)
-    return ax
+    maximum_evaluation = maximum(
+        Sambo.evaluation_count(result) for result in result_tuple
+    )
+    tick_step = max(1, round(Int, maximum_evaluation / 9))
+    axis.xticks = 0:tick_step:(maximum_evaluation + tick_step)
+    (!isnothing(plot_labels) || length(result_tuple) > 1) &&
+        axislegend(axis; position=:rb)
+    return axis
+end
+
+function _matrix_figure(title, count, figure)
+    width = count == 1 ? _FACET_SIZE : _MATRIX_COLUMN_STEP * count + 60
+    height = count == 1 ? _FACET_SIZE : _MATRIX_ROW_STEP * count + 80
+    fig = Figure(; merge((size=(width, height),), figure)...)
+    if count > 1
+        Label(fig[0, 1:count], title; fontsize=14)
+    end
+    return fig, fig.layout
+end
+
+function _fill_matrix_grid!(grid, count)
+    for index in 1:count
+        rowsize!(grid, index, _MATRIX_PANEL_SIZE)
+        colsize!(grid, index, _MATRIX_PANEL_SIZE)
+    end
+    rowgap!(grid, -10)
+    colgap!(grid, -8)
+    count > 1 && rowgap!(grid, 1, 8)
+    return grid
+end
+
+function _dimensionlabels(space, dims, names)
+    labels = isnothing(names) ?
+        [Sambo._dimensionlabel(space, dimension) for dimension in dims] :
+        string.(collect(names))
+    length(labels) == length(dims) ||
+        throw(DimensionMismatch("one name per selected dimension is required"))
+    return labels
+end
+
+function _matrix_axis(position, row, column, count, labels, axis)
+    diagonal = row == column
+    defaults = (
+        aspect=AxisAspect(1),
+        xlabel=diagonal || row == count ? labels[column] : "",
+        ylabel=!diagonal && column == 1 ? labels[row] : "",
+        xaxisposition=diagonal ? :top : :bottom,
+        yaxisposition=diagonal ? :right : :left,
+        xticklabelsvisible=diagonal || row == count,
+        yticklabelsvisible=diagonal || column == 1,
+        xticklabelrotation=π / 4,
+        yticklabelrotation=diagonal ? π / 4 : 0,
+        xlabelsize=10,
+        ylabelsize=10,
+        xticklabelsize=8,
+        yticklabelsize=8,
+        xticklabelspace=8.0,
+        yticklabelspace=8.0,
+        xlabelpadding=6,
+        ylabelpadding=6,
+        xgridvisible=false,
+        ygridvisible=false,
+    )
+    return Axis(position[row, column]; merge(defaults, axis)...)
+end
+
+function _apply_dimension_ticks!(axis, space, xdimension, ydimension, diagonal)
+    xticks = _plot_ticks(space, xdimension)
+    !isnothing(xticks) && (axis.xticks = xticks)
+    if !diagonal
+        yticks = _plot_ticks(space, ydimension)
+        !isnothing(yticks) && (axis.yticks = yticks)
+    end
+    return axis
+end
+
+_ticklabel(value) = string(round(value; sigdigits=4))
+function _continuous_ticks(lower, upper)
+    positions = collect(0.1:0.2:0.9)
+    values = @. lower + positions * (upper - lower)
+    return positions, _ticklabel.(values)
+end
+_plot_ticks(space::Sambo.Box, dimension) =
+    _continuous_ticks(space.lower[dimension], space.upper[dimension])
+function _plot_ticks(space::Sambo.SearchSpace, dimension)
+    ticks = Sambo._dimensionticks(space, dimension)
+    !isnothing(ticks) && return ticks
+    descriptor = space.dimensions[dimension]
+    return descriptor isa Sambo.Continuous ?
+        _continuous_ticks(descriptor.lower, descriptor.upper) : nothing
+end
+
+function _jitter(values, space, dimension, amount, rng)
+    isnothing(Sambo._dimensionticks(space, dimension)) && return values
+    output = collect(values)
+    @. output += amount * randn(rng)
+    return output
 end
 
 function Sambo.evaluationsplot(
     result::Sambo.Result;
     dimensions=1:size(Sambo.latentpoints(Sambo.trace(result)), 1),
+    names=nothing,
+    bins=10,
+    jitter=0.02,
+    rng=Random.default_rng(),
+    colormap=:summer,
+    colorbar=false,
     axis=(;),
     figure=(;),
 )
-    fig = Figure(; figure...)
-    Sambo.evaluationsplot!(fig, result; dimensions, axis)
+    dims = Sambo._checkdimensions(result.space, dimensions)
+    fig, grid = _matrix_figure(
+        "Sequence & distribution of function evaluations",
+        length(dims),
+        figure,
+    )
+    Sambo.evaluationsplot!(
+        grid,
+        result;
+        dimensions=dims,
+        names,
+        bins,
+        jitter,
+        rng,
+        colormap,
+        colorbar,
+        axis,
+    )
     return fig
 end
 
-function Sambo.evaluationsplot!(position, result::Sambo.Result; dimensions=1:size(Sambo.latentpoints(Sambo.trace(result)), 1), axis=(;))
-    data = Sambo.evaluationsdata(result; dimensions)
-    n = length(data.labels)
-    for row in 1:n, column in 1:row
-        ax = Axis(
-            position[row, column];
-            xlabel=data.labels[column],
-            ylabel=row == column ? "Count" : data.labels[row],
-            axis...,
-        )
-        if row == column
-            hist!(ax, @view data.latent[column, :])
+function Sambo.evaluationsplot!(
+    position,
+    result::Sambo.Result;
+    dimensions=1:size(Sambo.latentpoints(Sambo.trace(result)), 1),
+    names=nothing,
+    bins=10,
+    jitter=0.02,
+    rng=Random.default_rng(),
+    colormap=:summer,
+    colorbar=false,
+    axis=(;),
+)
+    dims = Sambo._checkdimensions(result.space, dimensions)
+    data = Sambo.evaluationsdata(result; dimensions=dims)
+    labels = _dimensionlabels(result.space, dims, names)
+    count = length(dims)
+    best = argmin(Sambo.objectivevalues(Sambo.trace(result)))
+    diagonal_axes = Axis[]
+    colorplot = nothing
+    for row in 1:count, column in 1:row
+        xdimension = dims[column]
+        ydimension = dims[row]
+        diagonal = row == column
+        ax = _matrix_axis(position, row, column, count, labels, axis)
+        if diagonal
+            push!(diagonal_axes, ax)
+            dimension_bins = isnothing(data.ticks[column]) ? bins :
+                max(1, length(data.ticks[column][1]))
+            hist!(
+                ax,
+                @view(data.latent[column, :]);
+                bins=dimension_bins,
+                color=_PYTHON_COLORS[1],
+                strokewidth=0,
+            )
+            xlims!(ax, -0.05, 1.05)
         else
+            xvalues = _jitter(
+                @view(data.latent[column, :]),
+                result.space,
+                xdimension,
+                jitter,
+                rng,
+            )
+            yvalues = _jitter(
+                @view(data.latent[row, :]),
+                result.space,
+                ydimension,
+                jitter,
+                rng,
+            )
+            colorplot = scatter!(
+                ax,
+                xvalues,
+                yvalues;
+                color=data.order,
+                colormap,
+                markersize=7,
+                strokecolor=:black,
+                strokewidth=0.5,
+            )
             scatter!(
                 ax,
-                @view(data.latent[column, :]),
-                @view(data.latent[row, :]);
-                color=data.order,
-                colormap=:viridis,
+                data.latent[column, best],
+                data.latent[row, best];
+                marker=:star5,
+                color=(:red, 0.6),
+                strokecolor=:black,
+                strokewidth=0.5,
+                markersize=22,
             )
+            limits!(ax, -0.05, 1.05, -0.05, 1.05)
         end
-        column_ticks = data.ticks[column]
-        !isnothing(column_ticks) && (ax.xticks = column_ticks)
-        if row != column
-            row_ticks = data.ticks[row]
-            !isnothing(row_ticks) && (ax.yticks = row_ticks)
-        end
+        _apply_dimension_ticks!(ax, result.space, xdimension, ydimension, diagonal)
     end
+    length(diagonal_axes) > 1 && linkyaxes!(diagonal_axes...)
+    colorbar && !isnothing(colorplot) &&
+        Colorbar(position[1:count, count + 1], colorplot; label="Evaluation")
+    _fill_matrix_grid!(position, count)
     return position
 end
 
 function Sambo.objectiveplot(
     result::Sambo.Result;
+    model=Sambo.fittedmodel(result),
     dimensions=1:min(3, size(Sambo.latentpoints(Sambo.trace(result)), 1)),
-    resolution=30,
-    samples=min(128, Sambo.evaluation_count(result)),
+    names=nothing,
+    optimum=nothing,
+    resolution=16,
+    samples=min(250, Sambo.evaluation_count(result)),
+    levels=10,
+    plot_max_points=200,
     rng=Random.default_rng(),
+    colormap=Reverse(:viridis),
+    colorbar=false,
     axis=(;),
     figure=(;),
 )
-    fig = Figure(; figure...)
-    Sambo.objectiveplot!(fig, result; dimensions, resolution, samples, rng, axis)
+    dims = Sambo._checkdimensions(result.space, dimensions)
+    fig, grid = _matrix_figure("Partial dependence", length(dims), figure)
+    Sambo.objectiveplot!(
+        grid,
+        result;
+        model,
+        dimensions=dims,
+        names,
+        optimum,
+        resolution,
+        samples,
+        levels,
+        plot_max_points,
+        rng,
+        colormap,
+        colorbar,
+        axis,
+    )
     return fig
 end
 
 function Sambo.objectiveplot!(
     position,
     result::Sambo.Result;
+    model=Sambo.fittedmodel(result),
     dimensions=1:min(3, size(Sambo.latentpoints(Sambo.trace(result)), 1)),
-    resolution=30,
-    samples=min(128, Sambo.evaluation_count(result)),
+    names=nothing,
+    optimum=nothing,
+    resolution=16,
+    samples=min(250, Sambo.evaluation_count(result)),
+    levels=10,
+    plot_max_points=200,
     rng=Random.default_rng(),
+    colormap=Reverse(:viridis),
+    colorbar=false,
     axis=(;),
 )
+    isnothing(model) && throw(ArgumentError(
+        "objectiveplot requires a fitted model; pass `model=` for non-model-based results",
+    ))
     dims = Sambo._checkdimensions(result.space, dimensions)
-    n = length(dims)
-    for row in 1:n, column in 1:row
+    labels = _dimensionlabels(result.space, dims, names)
+    count = length(dims)
+    points = Sambo.latentpoints(Sambo.trace(result))
+    best = argmin(Sambo.objectivevalues(Sambo.trace(result)))
+    optimum_latent = isnothing(optimum) ? @view(points[:, best]) :
+        Sambo.encode(result.space, optimum)
+    point_indices = collect(1:min(plot_max_points, size(points, 2)))
+    filter!(index -> index != best, point_indices)
+    diagonal_axes = Axis[]
+    colorplot = nothing
+    for row in 1:count, column in 1:row
         xdimension = dims[column]
         ydimension = dims[row]
-        ax = Axis(
-            position[row, column];
-            xlabel=Sambo._dimensionlabel(result.space, xdimension),
-            ylabel=row == column ? "Objective" : Sambo._dimensionlabel(result.space, ydimension),
-            axis...,
-        )
-        if row == column
+        diagonal = row == column
+        ax = _matrix_axis(position, row, column, count, labels, axis)
+        if diagonal
+            push!(diagonal_axes, ax)
             dependence = Sambo.partialdependence(
-                result; dimensions=(xdimension,), resolution, samples, rng,
+                result;
+                model,
+                dimensions=(xdimension,),
+                resolution,
+                samples,
+                rng,
             )
-            lines!(ax, dependence.grids[1], dependence.values)
+            lines!(
+                ax,
+                dependence.grids[1],
+                dependence.values;
+                color=_PYTHON_COLORS[1],
+                linewidth=2,
+            )
+            vlines!(
+                ax,
+                [optimum_latent[xdimension]];
+                linestyle=:dash,
+                color=:red,
+                linewidth=1,
+            )
+            xlims!(ax, -0.05, 1.05)
         else
             dependence = Sambo.partialdependence(
-                result; dimensions=(xdimension, ydimension), resolution, samples, rng,
+                result;
+                model,
+                dimensions=(xdimension, ydimension),
+                resolution,
+                samples,
+                rng,
             )
-            contourf!(ax, dependence.grids[1], dependence.grids[2], dependence.values)
+            colorplot = contourf!(
+                ax,
+                dependence.grids[1],
+                dependence.grids[2],
+                dependence.values;
+                levels,
+                colormap=isempty(point_indices) ? colormap :
+                    [(color, 0.8) for color in to_colormap(colormap)],
+            )
+            if !isempty(point_indices)
+                scatter!(
+                    ax,
+                    @view(points[xdimension, point_indices]),
+                    @view(points[ydimension, point_indices]);
+                    color=(:black, 0.5),
+                    markersize=4,
+                    strokewidth=0,
+                )
+            end
+            scatter!(
+                ax,
+                optimum_latent[xdimension],
+                optimum_latent[ydimension];
+                marker=:star5,
+                color="#d00",
+                strokecolor=:black,
+                strokewidth=0.5,
+                markersize=18,
+            )
+            limits!(ax, -0.05, 1.05, -0.05, 1.05)
         end
-        xticks = Sambo._dimensionticks(result.space, xdimension)
-        !isnothing(xticks) && (ax.xticks = xticks)
-        if row != column
-            yticks = Sambo._dimensionticks(result.space, ydimension)
-            !isnothing(yticks) && (ax.yticks = yticks)
-        end
+        _apply_dimension_ticks!(ax, result.space, xdimension, ydimension, diagonal)
     end
+    length(diagonal_axes) > 1 && linkyaxes!(diagonal_axes...)
+    colorbar && !isnothing(colorplot) &&
+        Colorbar(position[1:count, count + 1], colorplot; label="Objective")
+    _fill_matrix_grid!(position, count)
     return position
 end
 

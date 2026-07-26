@@ -119,6 +119,9 @@ save("objective.png", objectiveplot(result))
 save("evaluations.png", evaluationsplot(result))
 ```
 
+The diagnostic suite covers optimization progress, cumulative regret, model
+behavior, and the evaluated search space.
+
 | Convergence | Regret |
 |---|---|
 | ![Convergence plot](reference/plots/julia/convergence.png) | ![Regret plot](reference/plots/julia/regret.png) |
@@ -129,6 +132,9 @@ Package extensions also provide SurrogatesBase, OptimizationBase, and
 MLJTuning integration without adding them to the core dependency set.
 
 ## Comparison with BlackBoxOptim.jl
+
+SAMBO.jl emphasizes structured search spaces and evaluation-limited algorithms,
+while BlackBoxOptim.jl emphasizes population-based stochastic optimization.
 
 | Feature | SAMBO.jl | [BlackBoxOptim.jl](https://github.com/SciML/BlackBoxOptim.jl) |
 |---|---|---|
@@ -142,6 +148,9 @@ MLJTuning integration without adding them to the core dependency set.
 | Ecosystem integration | CommonSolve, Optimization.jl, MLJ, Tables | BlackBoxOptim API |
 
 ## Comparison with Python SAMBO
+
+Both packages expose the same core algorithm families, with different language
+ecosystem integrations and workflow APIs.
 
 | Feature | SAMBO.jl | Python SAMBO |
 |---|---|---|
@@ -160,6 +169,8 @@ MLJTuning integration without adding them to the core dependency set.
 
 ### Rosenbrock microbenchmarks
 
+This compares warm-run execution time for equivalent seeded Rosenbrock workloads.
+
 <sub>Apple M1 Max; median warm-run time over 40 seeded Rosenbrock evaluations using Julia 1.12.6 and Python 3.14.6 with Python SAMBO 1.25.2.</sub>
 
 | Algorithm | Julia | Python | Improvement |
@@ -177,10 +188,14 @@ python3 benchmark/python_reference.py
 
 ### Cross-runtime solution-quality checks
 
+This checks whether the Julia and Python implementations reach comparable solutions on difficult problems.
+
 Identical objective formulas and bounds were tested over five independent seeds.
 SCE-UA and SHGO received 1,000 evaluations and SMBO received 300. The rotated, shifted
 five-dimensional cases are multimodal or ill-conditioned; targets were fixed in
 the scripts before running the matrix.
+
+<sub>Each cell: median final objective; target hits across five seeded runs. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
 
 | Algorithm | Problem (known optimum; target) | Julia | Python |
 |---|---|---:|---:|
@@ -193,10 +208,6 @@ the scripts before running the matrix.
 | SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −2.647; 2/5 | −3.322; 5/5 |
 | SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 19.054; 0/5 | 2.985; 5/5 |
 | SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 53.988; 1/5 | 4.28e−9; 5/5 |
-
-This checks whether the Julia and Python implementations reach comparable solutions on difficult problems.
-
-<sub>Each cell: median final objective; target hits across five seeded runs. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
 
 Reproduce the matrix:
 

@@ -90,6 +90,19 @@ save("evaluations.png", evaluationsplot(result))
 Package extensions also provide SurrogatesBase, OptimizationBase, and
 MLJTuning integration without adding them to the core dependency set.
 
+## Comparison with BlackBoxOptim.jl
+
+| Feature | SAMBO.jl | [BlackBoxOptim.jl](https://github.com/SciML/BlackBoxOptim.jl) |
+|---|---|---|
+| Primary focus | Structured, evaluation-limited global optimization | Population-based stochastic global optimization |
+| Algorithms | SCE-UA, SMBO, SHGO | Differential evolution, NES, direct and memetic search, SPSA, Borg MOEA |
+| Search spaces | Named continuous, integer, and categorical variables | Numeric vectors and bounded ranges |
+| Constraints | First-class constrained `Problem` | Not part of the primary `bboptimize` interface |
+| External evaluation | Identified `ask!`/`tell!` batches | Primarily managed through `bboptimize` |
+| Multi-objective optimization | × | Borg MOEA with Pareto fitness |
+| Diagnostics | Convergence, regret, partial dependence, evaluations | Progress traces and optimizer comparison |
+| Ecosystem integration | CommonSolve, Optimization.jl, MLJ, Tables | BlackBoxOptim API |
+
 ## Comparison with Python SAMBO
 
 | Feature | SAMBO.jl | Python SAMBO |
@@ -105,7 +118,7 @@ MLJTuning integration without adding them to the core dependency set.
 | Diagnostic plots | `objectiveplot(result)` | `plot_objective(result)` |
 | Optimization.jl | `OptimizationBase.solve(problem, SCEUA())` | × |
 | MLJ tuning | `SAMBOTuning()` | × |
-| scikit-learn search | × | `SAMBOSearchCV(...)` |
+| scikit-learn search | × | `SamboSearchCV(...)` |
 
 ### Rosenbrock microbenchmarks
 

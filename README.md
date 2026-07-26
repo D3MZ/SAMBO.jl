@@ -194,10 +194,9 @@ the scripts before running the matrix.
 | SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 19.054; 0/5 | 2.985; 5/5 |
 | SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 53.988; 1/5 | 4.28e−9; 5/5 |
 
-Each cell is `median final objective; target hits`. Independent RNG
-implementations prevent trajectory equality, so this is a known-optimum
-solution-quality check, not proof of algorithmic equivalence. Measured with Julia
-1.12.6 and Python 3.14.6 using Python SAMBO 1.25.2.
+This checks whether the Julia and Python implementations reach comparable solutions on difficult problems.
+
+<sub>Each cell: median final objective; target hits across five seeded runs. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
 
 Reproduce the matrix:
 

@@ -182,11 +182,17 @@ SCE-UA and SHGO received 1,000 evaluations and SMBO received 300. The rotated, s
 five-dimensional cases are multimodal or ill-conditioned; targets were fixed in
 the scripts before running the matrix.
 
-| Problem (known optimum; target) | Julia SCE-UA | Python SCE-UA | Julia SMBO | Python SMBO | Julia SHGO | Python SHGO |
-|---|---:|---:|---:|---:|---:|---:|
-| Hartmann-6 (−3.322; ≤ −2.8) | −3.320; 5/5 | −3.276; 5/5 | −3.304; 5/5 | −2.635; 2/5 | −2.647; 2/5 | −3.322; 5/5 |
-| Rotated Rastrigin-5 (0; ≤ 12) | 8.125; 5/5 | 17.258; 0/5 | 12.159; 2/5 | 35.577; 0/5 | 19.054; 0/5 | 2.985; 5/5 |
-| Rotated Rosenbrock-5 (0; ≤ 12) | 2.598; 5/5 | 12.298; 2/5 | 121.815; 0/5 | 88.992; 0/5 | 53.988; 1/5 | 4.28e−9; 5/5 |
+| Algorithm | Problem (known optimum; target) | Julia | Python |
+|---|---|---:|---:|
+| SCE-UA | Hartmann-6 (−3.322; ≤ −2.8) | −3.320; 5/5 | −3.276; 5/5 |
+| SCE-UA | Rotated Rastrigin-5 (0; ≤ 12) | 8.125; 5/5 | 17.258; 0/5 |
+| SCE-UA | Rotated Rosenbrock-5 (0; ≤ 12) | 2.598; 5/5 | 12.298; 2/5 |
+| SMBO | Hartmann-6 (−3.322; ≤ −2.8) | −3.304; 5/5 | −2.635; 2/5 |
+| SMBO | Rotated Rastrigin-5 (0; ≤ 12) | 12.159; 2/5 | 35.577; 0/5 |
+| SMBO | Rotated Rosenbrock-5 (0; ≤ 12) | 121.815; 0/5 | 88.992; 0/5 |
+| SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −2.647; 2/5 | −3.322; 5/5 |
+| SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 19.054; 0/5 | 2.985; 5/5 |
+| SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 53.988; 1/5 | 4.28e−9; 5/5 |
 
 Each cell is `median final objective; target hits`. Independent RNG
 implementations prevent trajectory equality, so this is a known-optimum

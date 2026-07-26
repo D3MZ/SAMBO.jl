@@ -79,6 +79,9 @@
     @test space_cardinality(SearchSpace(a=Choices(:x, :y), b=1:3)) == 6
     @test space_cardinality(SearchSpace(a=Continuous(1.0, 1.0), b=1:3)) == 3
     @test isnothing(space_cardinality(SearchSpace(a=Continuous(0.0, 1.0))))
+    @test SAMBO.latenttype(SearchSpace(Float32; x=Continuous(0, 1))) == Float32
+    @test SAMBO.latenttype(SearchSpace(BigFloat; x=Continuous(0, 1))) == BigFloat
+    @test_throws ArgumentError SearchSpace(evaluation=1:2)
 
     for design in (
         SAMBO.UniformDesign(),

@@ -1,31 +1,63 @@
-struct GaussianProcessSurrogate{L,N<:Real,J<:Real}
+struct AutomaticLengthScale end
+struct IsotropicLengthScale{T<:Real}
+    value::T
+end
+struct ARDLengthScale{V<:AbstractVector}
+    values::V
+end
+struct GeometricJitter{T<:Real}
+    initial::T
+    factor::T
+    attempts::Int
+end
+function GeometricJitter(initial=1e-10, factor=10.0, attempts=8)
+    isfinite(initial) && initial > 0 ||
+        throw(ArgumentError("initial jitter must be finite and positive"))
+    isfinite(factor) && factor > 1 ||
+        throw(ArgumentError("jitter factor must be finite and greater than one"))
+    attempts > 0 || throw(ArgumentError("jitter attempts must be positive"))
+    promoted = promote(initial, factor)
+    return GeometricJitter(promoted[1], promoted[2], attempts)
+end
+
+_length_scale(::AutomaticLengthScale) = AutomaticLengthScale()
+function _length_scale(scale::Real)
+    scale == 0 && return AutomaticLengthScale()
+    isfinite(scale) && scale > 0 ||
+        throw(ArgumentError("length_scale must be automatic or finite and positive"))
+    return IsotropicLengthScale(scale)
+end
+function _length_scale(scale::AbstractVector)
+    !isempty(scale) && all(value -> isfinite(value) && value > 0, scale) ||
+        throw(ArgumentError("ARD length scales must be finite and positive"))
+    return ARDLengthScale(collect(scale))
+end
+_jitter_policy(policy::GeometricJitter) = policy
+_jitter_policy(initial::Real) = GeometricJitter(initial)
+
+struct GaussianProcessSurrogate{L,N<:Real,J}
     length_scale::L
     noise::N
     jitter::J
 end
-function GaussianProcessSurrogate(; length_scale=0.0, noise=1e-8, jitter=1e-10)
-    valid_length_scale = length_scale isa AbstractVector ?
-        !isempty(length_scale) && all(value -> isfinite(value) && value > 0, length_scale) :
-        length_scale == 0 || isfinite(length_scale) && length_scale > 0
-    valid_length_scale ||
-        throw(ArgumentError("length_scale must be zero (automatic) or finite and positive"))
+function GaussianProcessSurrogate(;
+    length_scale=AutomaticLengthScale(),
+    noise=1e-8,
+    jitter=GeometricJitter(),
+)
     isfinite(noise) && noise >= 0 ||
         throw(ArgumentError("noise must be finite and nonnegative"))
-    isfinite(jitter) && jitter > 0 ||
-        throw(ArgumentError("jitter must be finite and positive"))
-    promoted_noise, promoted_jitter = promote(noise, jitter)
-    stored_scale = length_scale isa AbstractVector ?
-        collect(length_scale) : length_scale
     return GaussianProcessSurrogate(
-        stored_scale,
-        promoted_noise,
-        promoted_jitter,
+        _length_scale(length_scale),
+        noise,
+        _jitter_policy(jitter),
     )
 end
 
-struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,L}
+struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,LM,L}
     points::M
     factor::F
+    lower::LM
     alpha::V
     output_mean::T
     output_scale::T
@@ -34,7 +66,25 @@ struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,L}
 end
 
 @inline function _scaled_distance(left, right, length_scale::Real)
-    return sum(abs2, left .- right) / length_scale^2
+    inverse_scale = inv(length_scale)
+    distance = zero(promote_type(
+        eltype(left),
+        eltype(right),
+        typeof(length_scale),
+    ))
+    @inbounds for index in eachindex(left, right)
+        delta = (left[index] - right[index]) * inverse_scale
+        distance += delta * delta
+    end
+    return distance
+end
+@inline function _distance_squared(left, right)
+    distance = zero(promote_type(eltype(left), eltype(right)))
+    @inbounds for index in eachindex(left, right)
+        delta = left[index] - right[index]
+        distance += delta * delta
+    end
+    return distance
 end
 @inline function _scaled_distance(left, right, length_scale::AbstractVector)
     length(left) == length(length_scale) ||
@@ -79,18 +129,36 @@ function _default_length_scale(points)
     return clamp(nearest_sum / n, eltype(points)(0.03), eltype(points)(1.0))
 end
 
+resolve_length_scale(::AutomaticLengthScale, points, ::Type{T}) where {T} =
+    _default_length_scale(points)
+resolve_length_scale(scale::IsotropicLengthScale, points, ::Type{T}) where {T} =
+    T(scale.value)
+function resolve_length_scale(scale::ARDLengthScale, points, ::Type{T}) where {T}
+    length(scale.values) == size(points, 1) ||
+        throw(DimensionMismatch("one length scale per coordinate required"))
+    return T.(scale.values)
+end
+
+function _factor_covariance(covariance, policy::GeometricJitter, ::Type{T}) where {T}
+    jitter = T(policy.initial)
+    factor = nothing
+    for _ in 1:policy.attempts
+        trial = copy(covariance)
+        @inbounds for index in axes(trial, 1)
+            trial[index, index] += jitter
+        end
+        factor = cholesky(Symmetric(trial); check=false)
+        isposdef(factor) && return factor
+        jitter *= T(policy.factor)
+    end
+    throw(NumericalFailureError(
+        "unable to factor surrogate covariance matrix",
+    ))
+end
+
 function fitmodel(specification::GaussianProcessSurrogate, points, values, rng=Random.default_rng())
-    valid_length_scale = specification.length_scale isa AbstractVector ?
-        !isempty(specification.length_scale) &&
-            all(value -> isfinite(value) && value > 0, specification.length_scale) :
-        specification.length_scale == 0 ||
-            isfinite(specification.length_scale) && specification.length_scale > 0
-    valid_length_scale ||
-        throw(ArgumentError("length_scale must be zero (automatic) or finite and positive"))
     isfinite(specification.noise) && specification.noise >= 0 ||
         throw(ArgumentError("noise must be finite and nonnegative"))
-    isfinite(specification.jitter) && specification.jitter > 0 ||
-        throw(ArgumentError("jitter must be finite and positive"))
     T = promote_type(eltype(points), eltype(values), typeof(float(specification.noise)))
     X = Matrix{T}(points)
     y = Vector{T}(values)
@@ -100,15 +168,7 @@ function fitmodel(specification::GaussianProcessSurrogate, points, values, rng=R
     output_scale = std(y; corrected=false)
     iszero(output_scale) && (output_scale = one(T))
     standardized = (y .- output_mean) ./ output_scale
-    length_scale = if specification.length_scale isa AbstractVector
-        length(specification.length_scale) == size(X, 1) ||
-            throw(DimensionMismatch("one length scale per coordinate required"))
-        T.(specification.length_scale)
-    elseif specification.length_scale > 0
-        T(specification.length_scale)
-    else
-        _default_length_scale(X)
-    end
+    length_scale = resolve_length_scale(specification.length_scale, X, T)
     covariance = Matrix{T}(undef, n, n)
     for column in 1:n
         covariance[column, column] = one(T) + T(specification.noise)
@@ -122,25 +182,12 @@ function fitmodel(specification::GaussianProcessSurrogate, points, values, rng=R
             covariance[column, row] = value
         end
     end
-    jitter = T(specification.jitter)
-    factor = nothing
-    for _ in 1:8
-        trial = copy(covariance)
-        @inbounds for i in 1:n
-            trial[i, i] += jitter
-        end
-        factor = cholesky(Symmetric(trial); check=false)
-        isposdef(factor) && break
-        jitter *= T(10)
-    end
-    !isnothing(factor) && isposdef(factor) ||
-        throw(NumericalFailureError(
-            "unable to factor surrogate covariance matrix",
-        ))
+    factor = _factor_covariance(covariance, specification.jitter, T)
     alpha = factor \ standardized
     return GaussianProcessModel(
         X,
         factor,
+        Matrix(factor.L),
         alpha,
         output_mean,
         output_scale,
@@ -162,6 +209,50 @@ function _kernelmatrix(model::GaussianProcessModel, points)
         ))
     end
     return kernel
+end
+function kernelmatrix!(kernel, model::GaussianProcessModel, points)
+    size(kernel) == (size(model.points, 2), size(points, 2)) ||
+        throw(DimensionMismatch("kernel destination has the wrong size"))
+    for column in axes(points, 2), observation in axes(model.points, 2)
+        kernel[observation, column] = _matern52_scaled(_scaled_distance(
+            @view(points[:, column]),
+            @view(model.points[:, observation]),
+            model.length_scale,
+        ))
+    end
+    return kernel
+end
+
+mutable struct GPPredictionWorkspace{T}
+    kernel::Matrix{T}
+    solved_kernel::Matrix{T}
+end
+GPPredictionWorkspace(::Type{T}) where {T} =
+    GPPredictionWorkspace(Matrix{T}(undef, 0, 0), Matrix{T}(undef, 0, 0))
+predictionworkspace(specification, ::Type{T}) where {T} = nothing
+predictionworkspace(::GaussianProcessSurrogate, ::Type{T}) where {T} =
+    GPPredictionWorkspace(T)
+function ensure_capacity!(workspace::GPPredictionWorkspace{T}, observations, candidates) where {T}
+    if size(workspace.kernel, 1) < observations ||
+            size(workspace.kernel, 2) < candidates
+        rows = max(observations, size(workspace.kernel, 1))
+        columns = max(candidates, size(workspace.kernel, 2))
+        workspace.kernel = Matrix{T}(undef, rows, columns)
+        workspace.solved_kernel = Matrix{T}(undef, rows, columns)
+    end
+    return workspace
+end
+function _forward_solve!(destination, lower)
+    @inbounds for column in axes(destination, 2)
+        for row in axes(destination, 1)
+            value = destination[row, column]
+            for previous in 1:row-1
+                value -= lower[row, previous] * destination[previous, column]
+            end
+            destination[row, column] = value / lower[row, row]
+        end
+    end
+    return destination
 end
 
 struct EnsembleSurrogate{S}
@@ -236,13 +327,29 @@ Predict posterior means and latent-function variances.
 The returned variance excludes observation noise.
 """
 function predictmeanvariance!(means, variances, model::GaussianProcessModel, points)
+    workspace = GPPredictionWorkspace(eltype(model.points))
+    return predictmeanvariance!(means, variances, model, points, workspace)
+end
+function predictmeanvariance!(
+    means,
+    variances,
+    model::GaussianProcessModel,
+    points,
+    workspace::GPPredictionWorkspace,
+)
     length(means) == size(points, 2) == length(variances) ||
         throw(DimensionMismatch("one prediction per candidate required"))
-    kernel = _kernelmatrix(model, points)
+    observations = size(model.points, 2)
+    candidates = size(points, 2)
+    ensure_capacity!(workspace, observations, candidates)
+    kernel = @view workspace.kernel[1:observations, 1:candidates]
+    kernelmatrix!(kernel, model, points)
     mul!(means, transpose(kernel), model.alpha)
     @. means = model.output_mean + model.output_scale * means
-    solved_kernel = copy(kernel)
-    ldiv!(model.factor.L, solved_kernel)
+    solved_kernel =
+        @view workspace.solved_kernel[1:observations, 1:candidates]
+    copyto!(solved_kernel, kernel)
+    _forward_solve!(solved_kernel, model.lower)
     T = eltype(solved_kernel)
     for column in axes(solved_kernel, 2)
         latent_variance = max(
@@ -255,21 +362,48 @@ function predictmeanvariance!(means, variances, model::GaussianProcessModel, poi
 end
 
 function predictmean!(means, model::GaussianProcessModel, points)
+    workspace = GPPredictionWorkspace(eltype(model.points))
+    return predictmean!(means, model, points, workspace)
+end
+function predictmean!(
+    means,
+    model::GaussianProcessModel,
+    points,
+    workspace::GPPredictionWorkspace,
+)
     length(means) == size(points, 2) ||
         throw(DimensionMismatch("one prediction per candidate required"))
-    kernel = _kernelmatrix(model, points)
+    observations = size(model.points, 2)
+    candidates = size(points, 2)
+    ensure_capacity!(workspace, observations, candidates)
+    kernel = @view workspace.kernel[1:observations, 1:candidates]
+    kernelmatrix!(kernel, model, points)
     mul!(means, transpose(kernel), model.alpha)
     @. means = model.output_mean + model.output_scale * means
     return means
 end
 
+predictmeanvariance!(means, variances, model, points, workspace) =
+    predictmeanvariance!(means, variances, model, points)
+predictmean!(means, model, points, workspace) =
+    predictmean!(means, model, points)
+
 struct LowerConfidenceBound{T<:Real}
     exploration::T
 end
 LowerConfidenceBound(exploration=2.0) = LowerConfidenceBound{typeof(exploration)}(exploration)
+struct GreedyMean end
+struct DistanceUncertainty{S}
+    surrogate::S
+end
+clone_surrogate(surrogate) = deepcopy(surrogate)
 
 function acquisitionvalues!(destination, acquisition::LowerConfidenceBound, mean, variance, current_best)
     @. destination = mean -
         acquisition.exploration * sqrt(max(variance, zero(eltype(variance))))
+    return destination
+end
+function acquisitionvalues!(destination, ::GreedyMean, mean, variance, current_best)
+    copyto!(destination, mean)
     return destination
 end

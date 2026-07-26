@@ -1,9 +1,28 @@
 struct BrokenSurrogate end
 SAMBO.fitmodel(::BrokenSurrogate, points, values, rng) =
     throw(NumericalFailureError("intentional test failure"))
+struct FillCandidates
+    value::Float64
+    calls::Base.RefValue{Int}
+end
+function SAMBO.generate_candidates!(destination, state, sampler::FillCandidates)
+    sampler.calls[] += 1
+    fill!(destination, sampler.value)
+    return size(destination, 2)
+end
 
 @testset "advanced solver contracts" begin
     @testset "iterative SHGO" begin
+        @test_throws ComplexConstructionError SAMBO.buildcomplex(
+            [0.0 0.3 0.6 1.0; 0.0 0.3 0.6 1.0],
+            DelaunayTopology(),
+        )
+        knn = SAMBO.buildcomplex(
+            [0.0 1.0; 0.0 1.0],
+            KNearestTopology(neighbors=1),
+        )
+        @test knn.adjacency == [[2], [1]]
+
         problem = Problem(
             x -> sum(abs2, x),
             Box(fill(-2.0, 2), fill(2.0, 2)),
@@ -15,20 +34,35 @@ SAMBO.fitmodel(::BrokenSurrogate, points, values, rng) =
             rng=MersenneTwister(81),
         )
         step!(state)
-        first_samples = size(state.workspace.sample_points, 2)
+        storage = state.workspace.sample_points
+        first_samples = state.workspace.sample_count
         @test state.workspace.refinements == 1
         @test first_samples > 0
         @test !isempty(state.workspace.complex.adjacency)
         step!(state)
+        @test state.workspace.sample_points === storage
         @test state.workspace.refinements == 2
-        @test size(state.workspace.sample_points, 2) > first_samples
+        @test state.workspace.sample_count > first_samples
         @test homology_rank(state) >= 1
+        @test homology_rank(state) == minimizer_count(state)
+        @test topographical_candidate_count(state) ==
+            length(state.workspace.candidate_indices)
         @test homology_rank_differential(state) >= 0
 
         result = solve!(state)
         @test minimum(result) < 0.05
         @test result.statistics.refinements >= 2
         @test result.statistics.local_minima >= 1
+        @test result.statistics.homology_rank == homology_rank(state)
+
+        too_small = solve(
+            problem,
+            SHGO();
+            maximum_evaluations=2,
+            rng=MersenneTwister(810),
+        )
+        @test retcode(too_small) == :evaluation_limit
+        @test evaluation_count(too_small) == 0
     end
 
     @testset "external evaluation lifecycle" begin
@@ -59,6 +93,60 @@ SAMBO.fitmodel(::BrokenSurrogate, points, values, rng) =
         tell!(restored, pending, [point.x^2 for point in pending])
         @test evaluation_count(result(restored)) == 5
         @test trace(result(restored)).count == 5
+
+        finite = init(
+            Problem(SearchSpace(choice=Choices(:a))),
+            SMBO(initial_points=1);
+            maximum_evaluations=4,
+            rng=MersenneTwister(821),
+        )
+        finite_batch = ask!(finite, 1)
+        @test length(finite.occupied) == 1
+        cancel!(finite, finite_batch, [1])
+        @test isempty(finite.occupied)
+        replacement = ask!(finite, 1)
+        @test length(replacement) == 1
+        @test length(finite.occupied) == 1
+        tell!(finite, replacement, [0.0])
+        @test isempty(ask!(finite))
+        @test finite.core.retcode == :space_exhausted
+    end
+
+    @testset "candidate mixtures and refit schedules" begin
+        state = init(
+            Problem(SearchSpace(x=Continuous(0.0, 1.0))),
+            SMBO();
+            maximum_evaluations=4,
+            rng=MersenneTwister(820),
+        )
+        global_calls = Ref(0)
+        local_calls = Ref(0)
+        destination = zeros(1, 7)
+        all_local = MixtureCandidates(
+            FillCandidates(0.1, global_calls),
+            FillCandidates(0.9, local_calls);
+            global_fraction=0,
+        )
+        @test generate_candidates!(destination, state, all_local) == 7
+        @test global_calls[] == 0
+        @test local_calls[] == 1
+        @test all(==(0.9), destination)
+
+        global_calls[] = 0
+        local_calls[] = 0
+        all_global = MixtureCandidates(
+            FillCandidates(0.1, global_calls),
+            FillCandidates(0.9, local_calls);
+            global_fraction=1,
+        )
+        @test generate_candidates!(destination, state, all_global) == 7
+        @test global_calls[] == 1
+        @test local_calls[] == 0
+        @test all(==(0.1), destination)
+
+        @test SAMBO.refit_interval(FixedRefit(3), 100) == 3
+        @test SAMBO.refit_interval(SquareRootRefit(2), 3) == 2
+        @test SAMBO.refit_interval(SquareRootRefit(2), 100) == 10
     end
 
     @testset "sense, failures, constraints, and return codes" begin
@@ -167,6 +255,8 @@ SAMBO.fitmodel(::BrokenSurrogate, points, values, rng) =
         candidates = ask!(finite, 2)
         tell!(finite, candidates, [1.0, 2.0])
         @test isempty(ask!(finite, 1))
+        @test retcode(result(finite)) == :space_exhausted
+        step!(finite)
         @test retcode(result(finite)) == :space_exhausted
     end
 end

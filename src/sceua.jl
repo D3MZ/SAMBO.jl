@@ -40,6 +40,16 @@ end
 mutable struct SCEUAWorkspace{TX,TY}
     population::Matrix{TX}
     values::Vector{TY}
+    sorted_population::Matrix{TX}
+    sorted_values::Vector{TY}
+    losses::Vector{TY}
+    permutation::Vector{Int}
+    centroids::Matrix{TX}
+    proposals::Matrix{TX}
+    proposal_values::Vector{TY}
+    worst_indices::Vector{Int}
+    failed_indices::Vector{Int}
+    valid_indices::Vector{Int}
     initialized::Bool
 end
 
@@ -61,6 +71,16 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
     workspace = SCEUAWorkspace(
         Matrix{TX}(undef, d, population_size),
         Vector{TY}(undef, population_size),
+        Matrix{TX}(undef, d, population_size),
+        Vector{TY}(undef, population_size),
+        Vector{TY}(undef, population_size),
+        collect(1:population_size),
+        Matrix{TX}(undef, d, population_size),
+        Matrix{TX}(undef, d, population_size),
+        Vector{TY}(undef, population_size),
+        Vector{Int}(undef, population_size),
+        Vector{Int}(undef, population_size),
+        Vector{Int}(undef, population_size),
         false,
     )
     return SCEUAState(core, algorithm, workspace)
@@ -146,6 +166,32 @@ function _complex_centroid!(centroid, population, members, global_best)
     centroid ./= count
     return centroid
 end
+function _complex_centroid!(
+    centroid,
+    population,
+    population_size::Int,
+    complexes::Int,
+    complex_index::Int,
+    global_best::Int,
+)
+    worst = complex_index +
+        fld(population_size - complex_index, complexes) * complexes
+    worst == complex_index && return 0
+    fill!(centroid, zero(eltype(centroid)))
+    count = 0
+    contains_global_best = false
+    for member in complex_index:complexes:(worst - complexes)
+        centroid .+= @view population[:, member]
+        contains_global_best |= member == global_best
+        count += 1
+    end
+    if !contains_global_best
+        centroid .+= @view population[:, global_best]
+        count += 1
+    end
+    centroid ./= count
+    return worst
+end
 
 function _reflection!(proposal, centroid, worst, coefficient)
     @. proposal = centroid + coefficient * (centroid - worst)
@@ -176,29 +222,44 @@ function step!(state::SCEUAState)
 
     core = state.core
     workspace = state.workspace
-    permutation = sortperm(
-        _loss.(Ref(core.problem.sense), workspace.values),
-    )
-    workspace.population .= workspace.population[:, permutation]
-    workspace.values .= workspace.values[permutation]
+    for index in eachindex(workspace.values)
+        workspace.losses[index] =
+            _loss(core.problem.sense, workspace.values[index])
+    end
+    sortperm!(workspace.permutation, workspace.losses)
+    for destination in eachindex(workspace.permutation)
+        source = workspace.permutation[destination]
+        copyto!(
+            @view(workspace.sorted_population[:, destination]),
+            @view(workspace.population[:, source]),
+        )
+        workspace.sorted_values[destination] = workspace.values[source]
+    end
+    copyto!(workspace.population, workspace.sorted_population)
+    copyto!(workspace.values, workspace.sorted_values)
 
     d = size(workspace.population, 1)
     population_size = size(workspace.population, 2)
     requested_complexes = state.algorithm.complexes == 0 ? clamp(d, 2, 5) :
         state.algorithm.complexes
     complexes = min(requested_complexes, population_size)
-    proposals = Matrix{eltype(workspace.population)}(undef, d, complexes)
-    worst_indices = Vector{Int}(undef, complexes)
-    centroids = Matrix{eltype(workspace.population)}(undef, d, complexes)
+    proposals = workspace.proposals
+    worst_indices = workspace.worst_indices
+    centroids = workspace.centroids
     active = 0
     for complex_index in 1:complexes
-        indices = _complex_members(population_size, complexes, complex_index)
-        length(indices) >= 2 || continue
-        worst_index = indices[end]
         active += 1
         proposal = @view proposals[:, active]
         centroid = @view centroids[:, active]
-        _complex_centroid!(centroid, workspace.population, indices, 1)
+        worst_index = _complex_centroid!(
+            centroid,
+            workspace.population,
+            population_size,
+            complexes,
+            complex_index,
+            1,
+        )
+        iszero(worst_index) && (active -= 1; continue)
         worst = @view workspace.population[:, worst_index]
         _reflection!(proposal, centroid, worst, state.algorithm.reflection)
         repair!(
@@ -214,11 +275,13 @@ function step!(state::SCEUAState)
     active == 0 && (core.retcode = :infeasible_space; return state)
     proposals = @view proposals[:, 1:active]
     worst_indices = @view worst_indices[1:active]
-    reflection_values = _evaluate_batch(core, proposals)
+    reflection_values = @view workspace.proposal_values[1:active]
+    _evaluate_batch!(reflection_values, core, proposals)
     core.iteration += 1
     _commit_batch!(core, proposals, reflection_values)
 
-    failed = Int[]
+    failed = workspace.failed_indices
+    failed_count = 0
     for index in 1:active
         population_index = worst_indices[index]
         if _isbetter(
@@ -229,18 +292,22 @@ function step!(state::SCEUAState)
             workspace.population[:, population_index] .= @view proposals[:, index]
             workspace.values[population_index] = reflection_values[index]
         else
-            push!(failed, index)
+            failed_count += 1
+            failed[failed_count] = index
         end
     end
     _finished(core) && return state
 
-    contraction_count = min(length(failed), _remaining(core))
+    contraction_count = min(failed_count, _remaining(core))
     if contraction_count > 0
-        contractions = Matrix{eltype(workspace.population)}(undef, d, contraction_count)
-        for (output_index, failed_index) in enumerate(@view failed[1:contraction_count])
+        contractions = workspace.proposals
+        contraction_to_failure = workspace.valid_indices
+        valid_count = 0
+        for failure_position in 1:contraction_count
+            failed_index = failed[failure_position]
             population_index = worst_indices[failed_index]
             worst = @view workspace.population[:, population_index]
-            proposal = @view contractions[:, output_index]
+            proposal = @view contractions[:, valid_count + 1]
             centroid = @view centroids[:, failed_index]
             _contraction!(
                 proposal,
@@ -254,34 +321,55 @@ function step!(state::SCEUAState)
                 state.algorithm.repair,
                 core.problem,
                 centroid,
-            ) || (proposal .= worst)
+            ) || continue
+            valid_count += 1
+            contraction_to_failure[valid_count] = failure_position
         end
-        contraction_values = _evaluate_batch(core, contractions)
-        _commit_batch!(core, contractions, contraction_values)
-        for output_index in 1:contraction_count
-            failed_index = failed[output_index]
-            population_index = worst_indices[failed_index]
-            if _isbetter(
-                core.problem,
-                contraction_values[output_index],
-                workspace.values[population_index],
-            )
-                workspace.population[:, population_index] .= @view contractions[:, output_index]
-                workspace.values[population_index] = contraction_values[output_index]
-                failed[output_index] = 0
+        if valid_count > 0
+            valid_contractions = @view contractions[:, 1:valid_count]
+            contraction_values = @view workspace.proposal_values[1:valid_count]
+            _evaluate_batch!(contraction_values, core, valid_contractions)
+            _commit_batch!(core, valid_contractions, contraction_values)
+            for output_index in 1:valid_count
+                failure_position = contraction_to_failure[output_index]
+                failed_index = failed[failure_position]
+                population_index = worst_indices[failed_index]
+                if _isbetter(
+                    core.problem,
+                    contraction_values[output_index],
+                    workspace.values[population_index],
+                )
+                    workspace.population[:, population_index] .=
+                        @view contractions[:, output_index]
+                    workspace.values[population_index] =
+                        contraction_values[output_index]
+                    failed[failure_position] = 0
+                end
             end
         end
     end
     _finished(core) && return state
 
-    remaining_failed = filter(value -> !iszero(value), failed)
-    replacement_count = min(length(remaining_failed), _remaining(core))
+    remaining_count = 0
+    for index in 1:failed_count
+        iszero(failed[index]) && continue
+        remaining_count += 1
+        failed[remaining_count] = failed[index]
+    end
+    replacement_count = min(remaining_count, _remaining(core))
     if replacement_count > 0
-        replacements = _sample_feasible(core, replacement_count, UniformDesign())
-        replacement_values = _evaluate_batch(core, replacements)
+        replacements = @view workspace.proposals[:, 1:replacement_count]
+        _sample_feasible!(
+            core.rng,
+            replacements,
+            UniformDesign(),
+            core.problem,
+        )
+        replacement_values = @view workspace.proposal_values[1:replacement_count]
+        _evaluate_batch!(replacement_values, core, replacements)
         _commit_batch!(core, replacements, replacement_values)
         for output_index in 1:replacement_count
-            failed_index = remaining_failed[output_index]
+            failed_index = failed[output_index]
             population_index = worst_indices[failed_index]
             workspace.population[:, population_index] .= @view replacements[:, output_index]
             workspace.values[population_index] = replacement_values[output_index]

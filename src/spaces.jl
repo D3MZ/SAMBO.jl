@@ -56,9 +56,12 @@ end
 Box(bounds::AbstractVector{<:Tuple}) = Box(first.(bounds), last.(bounds))
 
 "A heterogeneous search space. Keyword construction decodes points as named tuples."
-struct SearchSpace{D<:Union{Tuple,NamedTuple}}
+struct SearchSpace{T<:AbstractFloat,D<:Union{Tuple,NamedTuple}}
     dimensions::D
-    function SearchSpace(dimensions::D) where {D<:Union{Tuple,NamedTuple}}
+    function SearchSpace(
+        ::Type{T},
+        dimensions::D,
+    ) where {T<:AbstractFloat,D<:Union{Tuple,NamedTuple}}
         isempty(dimensions) && throw(ArgumentError("SearchSpace cannot be empty"))
         for descriptor in dimensions
             descriptor isa Union{Continuous,AbstractRange,Choices} ||
@@ -66,19 +69,39 @@ struct SearchSpace{D<:Union{Tuple,NamedTuple}}
             descriptor isa AbstractRange && isempty(descriptor) &&
                 throw(ArgumentError("search-space ranges cannot be empty"))
         end
-        new{D}(dimensions)
+        if dimensions isa NamedTuple
+            reserved = (
+                :evaluation,
+                :source,
+                :iteration,
+                :objective,
+                :elapsed_seconds,
+            )
+            collision = findfirst(name -> name in reserved, propertynames(dimensions))
+            isnothing(collision) || throw(ArgumentError(
+                "search-space dimension name $(propertynames(dimensions)[collision]) is reserved",
+            ))
+        end
+        new{T,D}(dimensions)
     end
 end
-SearchSpace(dimensions...) = SearchSpace(dimensions)
-SearchSpace(; kwargs...) = SearchSpace((; kwargs...))
+SearchSpace(::Type{T}, dimensions...) where {T<:AbstractFloat} =
+    SearchSpace(T, dimensions)
+SearchSpace(dimensions::D) where {D<:Union{Tuple,NamedTuple}} =
+    SearchSpace(Float64, dimensions)
+SearchSpace(dimensions...) = SearchSpace(Float64, dimensions)
+SearchSpace(::Type{T}; kwargs...) where {T<:AbstractFloat} =
+    SearchSpace(T, (; kwargs...))
+SearchSpace(; kwargs...) = SearchSpace(Float64, (; kwargs...))
 
 dimension(space::Box) = length(space.lower)
 dimension(space::SearchSpace) = length(space.dimensions)
 latenttype(space::Box{T}) where {T} = T
-latenttype(::SearchSpace) = Float64
+latenttype(::SearchSpace{T}) where {T} = T
 dimensionnames(::Box) = nothing
-dimensionnames(space::SearchSpace{<:NamedTuple}) = propertynames(space.dimensions)
-dimensionnames(::SearchSpace) = nothing
+_dimensionnames(dimensions::NamedTuple) = propertynames(dimensions)
+_dimensionnames(dimensions::Tuple) = nothing
+dimensionnames(space::SearchSpace) = _dimensionnames(space.dimensions)
 
 @inline _decode(d::Continuous, z) = d.lower + z * (d.upper - d.lower)
 @inline function _decode(d::AbstractRange, z)
@@ -124,14 +147,14 @@ end
         [:( _decode(getfield(dimensions, $index), z[$index]) ) for index in 1:count]...,
     )
 end
-function decode(space::SearchSpace{D}, z::AbstractVector) where {D<:Tuple}
+function decode(space::SearchSpace{T,D}, z::AbstractVector) where {T,D<:Tuple}
     _checklatent(space, z)
     return _decodedimensions(space.dimensions, z)
 end
 function decode(
-    space::SearchSpace{D},
+    space::SearchSpace{T,D},
     z::AbstractVector,
-) where {Names,Types,D<:NamedTuple{Names,Types}}
+) where {T,Names,Types,D<:NamedTuple{Names,Types}}
     _checklatent(space, z)
     decoded = _decodedimensions(space.dimensions, z)
     return NamedTuple{Names}(decoded)
@@ -172,15 +195,24 @@ function _canonicalize!(z, space::Box)
     end
     return z
 end
+@inline canonicalize_coordinate(dimension::Continuous, value) =
+    ifelse(dimension.lower == dimension.upper, zero(value), value)
+@inline canonicalize_coordinate(dimension::AbstractRange, value) =
+    _encode(dimension, _decode(dimension, value))
+@inline canonicalize_coordinate(dimension::Choices, value) =
+    _encode(dimension, _decode(dimension, value))
+@generated function _canonicalize_dimensions!(z, dimensions::D) where {D}
+    count = D <: NamedTuple ? length(D.parameters[1]) : length(D.parameters)
+    operations = [
+        :(z[$index] = canonicalize_coordinate(
+            getfield(dimensions, $index),
+            z[$index],
+        )) for index in 1:count
+    ]
+    return Expr(:block, operations..., :(z))
+end
 function _canonicalize!(z, space::SearchSpace)
-    for index in 1:dimension(space)
-        dimension = space.dimensions[index]
-        if dimension isa Continuous && dimension.lower == dimension.upper
-            z[index] = zero(eltype(z))
-        elseif dimension isa AbstractRange || dimension isa Choices
-            z[index] = _encode(dimension, _decode(dimension, z[index]))
-        end
-    end
+    _canonicalize_dimensions!(z, space.dimensions)
     return z
 end
 

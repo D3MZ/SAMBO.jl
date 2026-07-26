@@ -1,10 +1,17 @@
-struct SimplexTopology
+struct DelaunayTopology end
+struct KNearestTopology
     neighbors::Int
 end
-function SimplexTopology(; neighbors=0)
-    neighbors >= 0 || throw(ArgumentError("topology neighbors must be nonnegative"))
-    return SimplexTopology(neighbors)
+function KNearestTopology(; neighbors)
+    neighbors > 0 || throw(ArgumentError("topology neighbors must be positive"))
+    return KNearestTopology(neighbors)
 end
+const SimplexTopology = DelaunayTopology
+struct ComplexConstructionError <: Exception
+    message::String
+end
+Base.showerror(io::IO, error::ComplexConstructionError) =
+    print(io, error.message)
 struct PatternSearch{T<:Real}
     initial_step::T
     minimum_step::T
@@ -35,7 +42,7 @@ struct TopologicalMultistart{S,T,L}
 end
 function TopologicalMultistart(;
     sampling=SobolDesign(),
-    topology=SimplexTopology(),
+    topology=DelaunayTopology(),
     local_solver=PatternSearch(),
     samples=256,
     local_starts=8,
@@ -50,7 +57,7 @@ struct NeighborComplex
 end
 neighbors(complex::NeighborComplex, vertex) = complex.adjacency[vertex]
 
-function buildcomplex(points, topology::SimplexTopology)
+function buildcomplex(points, ::DelaunayTopology)
     _, count = size(points)
     count > 0 || return NeighborComplex(Vector{Vector{Int}}())
     dimension_count = size(points, 1)
@@ -62,41 +69,58 @@ function buildcomplex(points, topology::SimplexTopology)
             position < count && push!(adjacency[order[position]], order[position + 1])
         end
         return NeighborComplex(adjacency)
-    elseif count >= dimension_count + 1
-        try
-            simplices = MiniQhull.delaunay(points, "qhull d Qt Qbb Qc QJ Pp")
-            adjacency = [Int[] for _ in 1:count]
-            for simplex in eachcol(simplices), left in eachindex(simplex), right in left+1:length(simplex)
-                a = Int(simplex[left])
-                b = Int(simplex[right])
-                (1 <= a <= count && 1 <= b <= count) || continue
-                push!(adjacency[a], b)
-                push!(adjacency[b], a)
-            end
-            foreach(unique!, adjacency)
-            all(list -> !isempty(list), adjacency) && return NeighborComplex(adjacency)
-        catch error
-            error isa InterruptException && rethrow()
-        end
     end
-    # Degenerate clouds fall back to a geometric neighborhood graph.
-    neighbor_count = topology.neighbors == 0 ?
-        min(count - 1, max(2, 2dimension_count + 1)) :
-        min(count - 1, topology.neighbors)
+    count >= dimension_count + 2 || throw(ComplexConstructionError(
+        "Delaunay construction requires at least dimension + 2 vertices",
+    ))
+    offsets = Float64.(
+        points[:, 2:end] .- @view(points[:, 1]),
+    )
+    rank(offsets) == dimension_count || throw(ComplexConstructionError(
+        "Delaunay construction requires a full-dimensional point cloud",
+    ))
+    simplices = try
+        MiniQhull.delaunay(points, "qhull d Qt Qbb Qc Qz QJ Pp")
+    catch error
+        error isa ErrorException || rethrow()
+        throw(ComplexConstructionError(
+            "Delaunay construction failed: $(sprint(showerror, error))",
+        ))
+    end
+    adjacency = [Int[] for _ in 1:count]
+    for simplex in eachcol(simplices), left in eachindex(simplex), right in left+1:length(simplex)
+        a = Int(simplex[left])
+        b = Int(simplex[right])
+        (1 <= a <= count && 1 <= b <= count) || continue
+        push!(adjacency[a], b)
+        push!(adjacency[b], a)
+    end
+    foreach(unique!, adjacency)
+    all(list -> !isempty(list), adjacency) || throw(ComplexConstructionError(
+        "Delaunay construction produced isolated vertices",
+    ))
+    return NeighborComplex(adjacency)
+end
+
+function buildcomplex(points, topology::KNearestTopology)
+    _, count = size(points)
+    count > 0 || return NeighborComplex(Vector{Vector{Int}}())
+    count > 1 || return NeighborComplex([Int[]])
+    neighbor_count = min(count - 1, topology.neighbors)
     adjacency = [Int[] for _ in 1:count]
     distances = Vector{eltype(points)}(undef, count)
     for vertex in 1:count
         for candidate in 1:count
             if candidate == vertex
                 distances[candidate] = eltype(points)(Inf)
-                continue
+            else
+                distance = zero(eltype(points))
+                @inbounds for row in axes(points, 1)
+                    delta = points[row, vertex] - points[row, candidate]
+                    distance += delta * delta
+                end
+                distances[candidate] = distance
             end
-            distance = zero(eltype(points))
-            @inbounds for row in axes(points, 1)
-                delta = points[row, vertex] - points[row, candidate]
-                distance += delta * delta
-            end
-            distances[candidate] = distance
         end
         adjacency[vertex] = partialsortperm(distances, 1:neighbor_count)
     end
@@ -152,7 +176,12 @@ function init(
     TY = eltype(core.trace.objective_values)
     remaining = _remaining(core)
     reserve = min(max(0, remaining - 1), max(2dimension(problem.space), 2algorithm.local_starts))
-    new_target = iszero(remaining) ? 0 : max(1, remaining - reserve)
+    minimum_complex = min(
+        remaining,
+        max(dimension(problem.space) + 2, 2dimension(problem.space) + 1),
+    )
+    new_target = iszero(remaining) ? 0 :
+        max(minimum_complex, remaining - reserve)
     sample_count = min(
         algorithm.samples,
         core.trace.count + new_target,
@@ -249,10 +278,6 @@ function _local_proposals(state::TopologicalMultistartState, ::PatternSearch)
         isfeasible(core.problem, decode(core.problem.space, proposal)) || continue
         count += 1
     end
-    if count == 0 && maximum > 0
-        proposals[:, 1] .= @view _sample_feasible(core, 1, UniformDesign())[:, 1]
-        count = 1
-    end
     return @view proposals[:, 1:count]
 end
 
@@ -314,7 +339,10 @@ refinement and local minimization of topographical minima.
 dispatched through `local_minimize!`, allowing external local solvers to extend
 the algorithm without changing SHGO.
 """
-struct SHGO{S,T,L}
+struct MinimizeEveryRefinement end
+struct MinimizeAtTermination end
+
+struct SHGO{S,T,L,M}
     sampling::S
     topology::T
     local_solver::L
@@ -323,11 +351,11 @@ struct SHGO{S,T,L}
     local_budget::Int
     minimum_homology_growth::Int
     homology_patience::Int
-    minimize_every_iteration::Bool
+    minimization_schedule::M
 end
 function SHGO(;
     sampling=SobolDesign(),
-    topology=SimplexTopology(),
+    topology=DelaunayTopology(),
     local_solver=PatternSearch(),
     sampling_points=0,
     local_starts=8,
@@ -335,6 +363,7 @@ function SHGO(;
     minimum_homology_growth=0,
     homology_patience=2,
     minimize_every_iteration=true,
+    minimization_schedule=nothing,
 )
     sampling_points >= 0 ||
         throw(ArgumentError("sampling_points must be nonnegative"))
@@ -344,6 +373,9 @@ function SHGO(;
         throw(ArgumentError("minimum_homology_growth must be nonnegative"))
     homology_patience > 0 ||
         throw(ArgumentError("homology_patience must be positive"))
+    schedule = isnothing(minimization_schedule) ?
+        (minimize_every_iteration ? MinimizeEveryRefinement() :
+            MinimizeAtTermination()) : minimization_schedule
     return SHGO(
         sampling,
         topology,
@@ -353,16 +385,28 @@ function SHGO(;
         local_budget,
         minimum_homology_growth,
         homology_patience,
-        minimize_every_iteration,
+        schedule,
     )
+end
+
+minimize_candidates!(state, ::MinimizeEveryRefinement) =
+    update_minimizer_pool!(state)
+minimize_candidates!(state, ::MinimizeAtTermination) = state
+finalize_local_search!(state, ::MinimizeEveryRefinement) = state
+function finalize_local_search!(state, ::MinimizeAtTermination)
+    state.workspace.sample_count == 0 && return state
+    _remaining(state.core) == 0 && return state
+    update_complex!(state)
+    return update_minimizer_pool!(state)
 end
 
 mutable struct SHGOWorkspace{TX,TY}
     sample_points::Matrix{TX}
     sample_values::Vector{TY}
+    sample_count::Int
     complex::NeighborComplex
     candidate_indices::Vector{Int}
-    mapped_vertices::Set{Tuple}
+    mapped_vertices::BitVector
     minimizer_points::Vector{Vector{TX}}
     minimizer_values::Vector{TY}
     refinements::Int
@@ -370,6 +414,12 @@ mutable struct SHGOWorkspace{TX,TY}
     homology_rank_differential::Int
     stagnant_homology_iterations::Int
     initialized_observations::Int
+    local_center::Vector{TX}
+    local_lower::Vector{TX}
+    local_upper::Vector{TX}
+    local_proposals::Matrix{TX}
+    local_candidates::Matrix{TX}
+    local_values::Vector{TY}
 end
 
 mutable struct SHGOState{C,A,W}
@@ -392,11 +442,19 @@ function init(
     TX = eltype(core.trace.latent_points)
     TY = eltype(core.trace.objective_values)
     workspace = SHGOWorkspace(
-        Matrix{TX}(undef, dimension(problem.space), 0),
-        TY[],
+        Matrix{TX}(
+            undef,
+            dimension(problem.space),
+            core.criteria.maximum_evaluations + core.trace.count,
+        ),
+        Vector{TY}(
+            undef,
+            core.criteria.maximum_evaluations + core.trace.count,
+        ),
+        0,
         NeighborComplex(Vector{Vector{Int}}()),
         Int[],
-        Set{Tuple}(),
+        falses(core.criteria.maximum_evaluations + core.trace.count),
         Vector{TX}[],
         TY[],
         0,
@@ -404,6 +462,12 @@ function init(
         0,
         0,
         0,
+        Vector{TX}(undef, dimension(problem.space)),
+        Vector{TX}(undef, dimension(problem.space)),
+        Vector{TX}(undef, dimension(problem.space)),
+        Matrix{TX}(undef, dimension(problem.space), 2dimension(problem.space)),
+        Matrix{TX}(undef, dimension(problem.space), 2dimension(problem.space)),
+        Vector{TY}(undef, 2dimension(problem.space)),
     )
     return SHGOState(core, algorithm, workspace)
 end
@@ -411,8 +475,14 @@ end
 function _append_samples!(workspace::SHGOWorkspace, points, values)
     size(points, 2) == length(values) ||
         throw(DimensionMismatch("one value per sample point required"))
-    workspace.sample_points = hcat(workspace.sample_points, points)
-    append!(workspace.sample_values, values)
+    count = length(values)
+    first = workspace.sample_count + 1
+    last = workspace.sample_count + count
+    last <= size(workspace.sample_points, 2) ||
+        throw(AssertionError("SHGO sample capacity exceeded"))
+    copyto!(@view(workspace.sample_points[:, first:last]), points)
+    copyto!(@view(workspace.sample_values[first:last]), values)
+    workspace.sample_count = last
     return workspace
 end
 
@@ -437,14 +507,8 @@ function _sampling_points_per_refinement(state::SHGOState)
 end
 
 function _shgo_sampling_design(state::SHGOState)
-    design = state.algorithm.sampling
-    skip = size(state.workspace.sample_points, 2)
-    if design isa SobolDesign
-        return SobolDesign(skip=design.skip + skip)
-    elseif design isa HaltonDesign
-        return HaltonDesign(skip=design.skip + skip)
-    end
-    return design
+    skip = state.workspace.sample_count
+    return advance(state.algorithm.sampling, skip)
 end
 
 function refine_sampling!(state::SHGOState)
@@ -470,9 +534,9 @@ end
 
 function update_complex!(state::SHGOState)
     workspace = state.workspace
-    isempty(workspace.sample_values) && return state
+    workspace.sample_count == 0 && return state
     workspace.complex = buildcomplex(
-        workspace.sample_points,
+        @view(workspace.sample_points[:, 1:workspace.sample_count]),
         state.algorithm.topology,
     )
     return state
@@ -482,10 +546,13 @@ function local_minimum_candidates(state::SHGOState)
     workspace = state.workspace
     candidates = localcandidates(
         workspace.complex,
-        _loss.(Ref(state.core.problem.sense), workspace.sample_values),
+        _loss.(
+            Ref(state.core.problem.sense),
+            @view(workspace.sample_values[1:workspace.sample_count]),
+        ),
     )
     filter!(candidates) do index
-        !(Tuple(@view workspace.sample_points[:, index]) in workspace.mapped_vertices)
+        !workspace.mapped_vertices[index]
     end
     sort!(
         candidates;
@@ -495,19 +562,21 @@ function local_minimum_candidates(state::SHGOState)
     return candidates
 end
 
-homology_rank(state::SHGOState) =
-    length(state.workspace.minimizer_values) + length(state.workspace.candidate_indices)
+homology_rank(state::SHGOState) = state.workspace.homology_rank
 homology_rank_differential(state::SHGOState) =
     state.workspace.homology_rank_differential
+topographical_candidate_count(state::SHGOState) =
+    length(state.workspace.candidate_indices)
+minimizer_count(state::SHGOState) =
+    length(state.workspace.minimizer_values)
 
-function _local_bounds(state::SHGOState, vertex)
+function _local_bounds!(lower, upper, state::SHGOState, vertex)
     workspace = state.workspace
-    TX = eltype(workspace.sample_points)
-    d = size(workspace.sample_points, 1)
-    lower = zeros(TX, d)
-    upper = ones(TX, d)
+    fill!(lower, zero(eltype(lower)))
+    fill!(upper, one(eltype(upper)))
     center = @view workspace.sample_points[:, vertex]
-    for neighbor in neighbors(workspace.complex, vertex), axis in 1:d
+    for neighbor in neighbors(workspace.complex, vertex),
+            axis in eachindex(center, lower, upper)
         value = workspace.sample_points[axis, neighbor]
         value < center[axis] && (lower[axis] = max(lower[axis], value))
         value > center[axis] && (upper[axis] = min(upper[axis], value))
@@ -515,9 +584,8 @@ function _local_bounds(state::SHGOState, vertex)
     return lower, upper
 end
 
-function _bounded_local_proposals(center, step, lower, upper)
+function _bounded_local_proposals!(proposals, center, step, lower, upper)
     d = length(center)
-    proposals = Matrix{eltype(center)}(undef, d, 2d)
     count = 0
     for axis in 1:d, direction in (-1, 1)
         proposal = @view proposals[:, count + 1]
@@ -551,33 +619,51 @@ function local_minimize!(
 )
     core = state.core
     TX = eltype(core.trace.latent_points)
-    center = Vector{TX}(start)
+    workspace = state.workspace
+    center = workspace.local_center
+    copyto!(center, start)
     value = start_value
     step = TX(initialstep(solver))
     used = 0
     while used < budget && !_finished(core) && step >= TX(minimumstep(solver))
-        proposals = _bounded_local_proposals(center, step, lower, upper)
+        proposals = _bounded_local_proposals!(
+            workspace.local_proposals,
+            center,
+            step,
+            lower,
+            upper,
+        )
         count = min(size(proposals, 2), budget - used, _remaining(core))
         count == 0 && break
-        candidates = Matrix(@view proposals[:, 1:count])
-        feasible = Int[]
-        for column in axes(candidates, 2)
-            _canonicalize!(@view(candidates[:, column]), core.problem.space)
+        feasible_count = 0
+        for column in 1:count
+            proposal = @view proposals[:, column]
+            _canonicalize!(proposal, core.problem.space)
             isfeasible(core.problem, decode(
                 core.problem.space,
-                @view(candidates[:, column]),
-            )) && push!(feasible, column)
+                proposal,
+            )) || continue
+            feasible_count += 1
+            copyto!(
+                @view(workspace.local_candidates[:, feasible_count]),
+                proposal,
+            )
         end
-        if isempty(feasible)
+        if feasible_count == 0
             step /= TX(2)
             continue
         end
-        candidates = candidates[:, feasible]
-        values = _evaluate_batch(core, candidates)
+        candidates = @view workspace.local_candidates[:, 1:feasible_count]
+        values = @view workspace.local_values[1:feasible_count]
+        _evaluate_batch!(values, core, candidates)
         core.iteration += 1
         _commit_batch!(core, candidates, values)
-        used += length(values)
-        best = argmin(_loss.(Ref(core.problem.sense), values))
+        used += feasible_count
+        best = 1
+        for index in 2:feasible_count
+            _isbetter(core.problem, values[index], values[best]) &&
+                (best = index)
+        end
         if _isbetter(core.problem, values[best], value)
             center .= @view candidates[:, best]
             value = values[best]
@@ -585,7 +671,7 @@ function local_minimize!(
             step /= TX(2)
         end
     end
-    return center, value
+    return copy(center), value
 end
 
 function _same_minimum(left, right)
@@ -601,8 +687,10 @@ function update_minimizer_pool!(state::SHGOState)
     for candidate in @view candidates[1:count]
         _finished(state.core) && break
         start = @view workspace.sample_points[:, candidate]
-        push!(workspace.mapped_vertices, Tuple(start))
-        lower, upper = _local_bounds(state, candidate)
+        workspace.mapped_vertices[candidate] = true
+        lower = workspace.local_lower
+        upper = workspace.local_upper
+        _local_bounds!(lower, upper, state, candidate)
         automatic_budget = max(32, 16dimension(state.core.problem.space))
         budget = state.algorithm.local_budget == 0 ?
             automatic_budget : state.algorithm.local_budget
@@ -644,21 +732,34 @@ function update_minimizer_pool!(state::SHGOState)
     return state
 end
 
-function step!(state::SHGOState)
+abstract type SHGOStepOutcome end
+struct Refined <: SHGOStepOutcome end
+struct EvaluationBudgetExhausted <: SHGOStepOutcome end
+
+function _step!(state::SHGOState)
     _finished(state.core) && return state
-    previous_samples = size(state.workspace.sample_points, 2)
+    required_vertices = dimension(state.core.problem.space) == 1 ?
+        2 : dimension(state.core.problem.space) + 2
+    state.workspace.sample_count + _remaining(state.core) < required_vertices &&
+        return EvaluationBudgetExhausted()
+    previous_samples = state.workspace.sample_count
     refine_sampling!(state)
-    size(state.workspace.sample_points, 2) == previous_samples &&
-        return state
+    state.workspace.sample_count == previous_samples &&
+        return EvaluationBudgetExhausted()
     update_complex!(state)
     local_minimum_candidates(state)
-    state.algorithm.minimize_every_iteration && update_minimizer_pool!(state)
+    minimize_candidates!(state, state.algorithm.minimization_schedule)
     if !_finished(state.core) &&
             state.workspace.refinements > 1 &&
             state.workspace.stagnant_homology_iterations >=
                 state.algorithm.homology_patience
         state.core.retcode = :success
     end
+    return Refined()
+end
+
+function step!(state::SHGOState)
+    _step!(state)
     return state
 end
 
@@ -667,22 +768,16 @@ function solve!(state::SHGOState)
         throw(ArgumentError("solve! requires an objective"))
     try
         while !_finished(state.core)
-            before = state.core.evaluations
-            step!(state)
-            if state.core.evaluations == before && !_finished(state.core)
-                state.core.retcode = :infeasible_space
+            outcome = _step!(state)
+            if outcome isa EvaluationBudgetExhausted && !_finished(state.core)
+                state.core.retcode = :evaluation_limit
             end
         end
     catch error
         error isa InfeasibleSpaceError || rethrow()
         state.core.retcode = :infeasible_space
     end
-    if !state.algorithm.minimize_every_iteration &&
-            !isempty(state.workspace.sample_values) &&
-            _remaining(state.core) > 0
-        update_complex!(state)
-        update_minimizer_pool!(state)
-    end
+    finalize_local_search!(state, state.algorithm.minimization_schedule)
     return result(state)
 end
 solve(problem::Problem, algorithm::SHGO; kwargs...) =

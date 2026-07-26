@@ -17,13 +17,66 @@ end
 Base.showerror(io::IO, error::NumericalFailureError) =
     print(io, error.message)
 
+struct UnaryObjective{F}
+    objective::F
+end
+struct ParameterizedObjective{F,P}
+    objective::F
+    parameters::P
+end
+@inline (objective::UnaryObjective)(point) =
+    objective.objective(point)
+@inline (objective::ParameterizedObjective)(point) =
+    objective.objective(point, objective.parameters)
+bind_objective(::Nothing, parameters) = nothing
+bind_objective(::Nothing, ::Nothing) = nothing
+bind_objective(objective, ::Nothing) = UnaryObjective(objective)
+bind_objective(objective, parameters) =
+    ParameterizedObjective(objective, parameters)
+
+struct UnaryConstraint{C}
+    constraint::C
+end
+struct ParameterizedConstraint{C,P}
+    constraint::C
+    parameters::P
+end
+@inline (constraint::UnaryConstraint)(point) =
+    constraint.constraint(point)
+@inline (constraint::ParameterizedConstraint)(point) =
+    constraint.constraint(point, constraint.parameters)
+bind_constraint(constraint::Unconstrained, parameters) = constraint
+bind_constraint(constraint::Unconstrained, ::Nothing) = constraint
+bind_constraint(constraint, ::Nothing) = UnaryConstraint(constraint)
+bind_constraint(constraint, parameters) =
+    ParameterizedConstraint(constraint, parameters)
+
 struct Problem{F,S,C,P,O<:OptimizationSense}
     objective::F
     space::S
     constraint::C
     parameters::P
     sense::O
+    function Problem(
+        objective::F,
+        space::S,
+        constraint::C,
+        parameters::P,
+        sense::O,
+        ::Val{:bound},
+    ) where {F,S,C,P,O<:OptimizationSense}
+        new{F,S,C,P,O}(objective, space, constraint, parameters, sense)
+    end
 end
+Problem(objective, space, constraint, parameters, sense::OptimizationSense) =
+    Problem(
+        bind_objective(objective, parameters),
+        space,
+        bind_constraint(constraint, parameters),
+        parameters,
+        sense,
+        Val(:bound),
+    )
 Problem(
     objective,
     space;
@@ -43,6 +96,10 @@ Problem(objective, space, constraint, parameters) =
     _loss(problem, left) < _loss(problem, right)
 @inline _worst(::Type{T}, ::Minimize) where {T} = T(Inf)
 @inline _worst(::Type{T}, ::Maximize) where {T} = T(-Inf)
+argbest(::Minimize, values) = argmin(values)
+argbest(::Maximize, values) = argmax(values)
+reference_value(::Minimize, results) = minimum(minimum, results)
+reference_value(::Maximize, results) = maximum(minimum, results)
 
 @enum ObservationSource::UInt8 begin
     KnownObservation
@@ -103,6 +160,8 @@ retcode(r::Result) = r.retcode
 evaluation_count(r::Result) = get(r.statistics, :evaluations, r.trace.count)
 iteration_count(r::Result) = get(r.statistics, :iterations, 0)
 fittedmodel(r::Result) = r.model
+argbest(result::Result) =
+    argbest(result.sense, objectivevalues(trace(result)))
 
 struct ProgressEvent{T,X}
     evaluation::Int
@@ -110,6 +169,14 @@ struct ProgressEvent{T,X}
     latest_value::T
     best_value::T
     latest_point::X
+end
+struct BatchProgressEvent{T,X}
+    evaluation::Int
+    iteration::Int
+    latest_value::T
+    best_value::T
+    latest_point::X
+    batch_size::Int
 end
 
 struct StopCriteria{T<:AbstractFloat}
@@ -193,8 +260,7 @@ end
 
 function _evaluate(problem, z, ::Type{T}, nonfinite) where {T<:AbstractFloat}
     point = decode(problem.space, z)
-    value = isnothing(problem.parameters) ?
-        problem.objective(point) : problem.objective(point, problem.parameters)
+    value = problem.objective(point)
     return _checkedvalue(T, value, nonfinite, problem.sense)
 end
 

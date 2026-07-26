@@ -1,6 +1,22 @@
 struct UniformCandidates end
 struct AvoidRepeatedEvaluations end
 struct AllowRepeatedEvaluations end
+struct CandidateGenerationError <: Exception
+    message::String
+end
+struct ExactCandidateEquality end
+struct ApproximateCandidateEquality{T<:Real}
+    tolerance::T
+    function ApproximateCandidateEquality(tolerance::T) where {T<:Real}
+        isfinite(tolerance) && tolerance >= 0 ||
+            throw(ArgumentError("candidate tolerance must be finite and nonnegative"))
+        new{T}(tolerance)
+    end
+end
+ApproximateCandidateEquality(; tolerance=sqrt(eps(Float64))) =
+    ApproximateCandidateEquality(tolerance)
+Base.showerror(io::IO, error::CandidateGenerationError) =
+    print(io, error.message)
 struct GreedyBatch end
 struct LocalPenalization{T<:Real}
     strength::T
@@ -13,19 +29,55 @@ function LocalPenalization(; strength=1.0, radius=0.05)
         throw(ArgumentError("penalization radius must be finite and positive"))
     return LocalPenalization(promote(strength, radius)...)
 end
-struct GlobalLocalCandidates{T<:Real}
-    global_fraction::T
-    local_scale::T
+struct EliteGaussianCandidates{T<:Real}
+    scale::T
+    function EliteGaussianCandidates(scale::T) where {T<:Real}
+        isfinite(scale) && scale > 0 ||
+            throw(ArgumentError("local candidate scale must be finite and positive"))
+        new{T}(scale)
+    end
 end
-function GlobalLocalCandidates(; global_fraction=0.35, local_scale=0.15)
+EliteGaussianCandidates() = EliteGaussianCandidates(0.15)
+struct MixtureCandidates{G,L,T<:Real}
+    global_sampler::G
+    local_sampler::L
+    global_fraction::T
+end
+function MixtureCandidates(
+    global_sampler,
+    local_sampler;
+    global_fraction=0.35,
+)
     isfinite(global_fraction) && 0 <= global_fraction <= 1 ||
         throw(ArgumentError("global_fraction must lie in [0, 1]"))
-    isfinite(local_scale) && local_scale > 0 ||
-        throw(ArgumentError("local_scale must be finite and positive"))
-    return GlobalLocalCandidates(promote(global_fraction, local_scale)...)
+    return MixtureCandidates(
+        global_sampler,
+        local_sampler,
+        global_fraction,
+    )
 end
+GlobalLocalCandidates(; global_fraction=0.35, local_scale=0.15) =
+    MixtureCandidates(
+        UniformCandidates(),
+        EliteGaussianCandidates(local_scale);
+        global_fraction,
+    )
+struct FixedRefit
+    interval::Int
+    FixedRefit(interval=1) = interval > 0 ?
+        new(interval) : throw(ArgumentError("refit interval must be positive"))
+end
+struct SquareRootRefit
+    minimum_interval::Int
+    SquareRootRefit(minimum_interval=1) = minimum_interval > 0 ?
+        new(minimum_interval) :
+        throw(ArgumentError("minimum refit interval must be positive"))
+end
+refit_interval(schedule::FixedRefit, observations) = schedule.interval
+refit_interval(schedule::SquareRootRefit, observations) =
+    max(schedule.minimum_interval, isqrt(observations))
 
-struct SMBO{S,A,I,C,R,B}
+struct SMBO{S,A,I,C,F,R,B,E}
     surrogate::S
     acquisition::A
     initial_design::I
@@ -33,11 +85,11 @@ struct SMBO{S,A,I,C,R,B}
     initial_points::Int
     candidate_pool::Int
     batch_size::Int
-    refit_interval::Int
+    refit_schedule::F
     prediction_chunk_size::Int
-    adaptive_refit::Bool
     repeat_policy::R
     batch_strategy::B
+    candidate_equality::E
 end
 function SMBO(;
     surrogate=GaussianProcessSurrogate(),
@@ -48,10 +100,12 @@ function SMBO(;
     candidate_pool=4096,
     batch_size=1,
     refit_interval=1,
+    refit_schedule=nothing,
     prediction_chunk_size=4096,
     adaptive_refit=true,
     repeat_policy=AvoidRepeatedEvaluations(),
     batch_strategy=LocalPenalization(),
+    candidate_equality=ExactCandidateEquality(),
     exploration=nothing,
 )
     if !isnothing(exploration)
@@ -63,6 +117,9 @@ function SMBO(;
     refit_interval > 0 || throw(ArgumentError("refit_interval must be positive"))
     prediction_chunk_size > 0 ||
         throw(ArgumentError("prediction_chunk_size must be positive"))
+    schedule = isnothing(refit_schedule) ?
+        (adaptive_refit ? SquareRootRefit(refit_interval) :
+            FixedRefit(refit_interval)) : refit_schedule
     return SMBO(
         surrogate,
         acquisition,
@@ -71,11 +128,11 @@ function SMBO(;
         initial_points,
         candidate_pool,
         batch_size,
-        refit_interval,
+        schedule,
         prediction_chunk_size,
-        adaptive_refit,
         repeat_policy,
         batch_strategy,
+        candidate_equality,
     )
 end
 
@@ -97,11 +154,15 @@ mutable struct PendingBatch{T}
     unresolved::BitVector
 end
 
-mutable struct SMBOWorkspace{TX,TY}
+mutable struct SMBOWorkspace{TX,TY,P}
     means::Vector{TY}
     variances::Vector{TY}
     scores::Vector{TY}
     selected::Matrix{TX}
+    prediction::P
+    candidates::Matrix{TX}
+    order::Vector{Int}
+    available::BitVector
 end
 
 mutable struct SMBOState{C,A,T,W}
@@ -115,7 +176,34 @@ mutable struct SMBOState{C,A,T,W}
     initial_design::Matrix{T}
     initial_design_cursor::Int
     workspace::W
+    occupied::Set{Tuple}
 end
+
+function _unique_design_columns(design, equality)
+    selected = similar(design)
+    count = 0
+    for column in axes(design, 2)
+        candidate = @view design[:, column]
+        duplicate = any(1:count) do existing
+            _same_candidate(
+                candidate,
+                @view(selected[:, existing]),
+                equality,
+            )
+        end
+        duplicate && continue
+        count += 1
+        selected[:, count] .= candidate
+    end
+    return Matrix(@view selected[:, 1:count])
+end
+_prepare_initial_design(design, ::AllowRepeatedEvaluations) = design
+_prepare_initial_design(
+    design,
+    ::AvoidRepeatedEvaluations,
+    equality,
+) = _unique_design_columns(design, equality)
+_prepare_initial_design(design, ::AllowRepeatedEvaluations, equality) = design
 
 function init(problem::Problem, algorithm::SMBO; initial_points=nothing, initial_values=nothing, kwargs...)
     core = _makecore(problem; kwargs...)
@@ -138,12 +226,29 @@ function init(problem::Problem, algorithm::SMBO; initial_points=nothing, initial
         core.retcode = :infeasible_space
         Matrix{T}(undef, d, 0)
     end
+    design = _prepare_initial_design(
+        design,
+        algorithm.repeat_policy,
+        algorithm.candidate_equality,
+    )
     workspace = SMBOWorkspace(
         TY[],
         TY[],
         TY[],
         Matrix{T}(undef, d, 0),
+        predictionworkspace(algorithm.surrogate, TY),
+        Matrix{T}(undef, d, max(algorithm.candidate_pool, 8algorithm.batch_size)),
+        Int[],
+        BitVector(),
     )
+    occupied = Set{Tuple}()
+    if algorithm.repeat_policy isa AvoidRepeatedEvaluations &&
+            !isnothing(space_cardinality(problem.space)) &&
+            algorithm.candidate_equality isa ExactCandidateEquality
+        for column in 1:core.trace.count
+            push!(occupied, Tuple(@view core.trace.latent_points[:, column]))
+        end
+    end
     return SMBOState(
         core,
         algorithm,
@@ -155,15 +260,14 @@ function init(problem::Problem, algorithm::SMBO; initial_points=nothing, initial
         design,
         1,
         workspace,
+        occupied,
     )
 end
 
 function _fit_smbo!(state::SMBOState; force=false)
     trace = state.core.trace
     trace.count > 0 || return state
-    interval = state.algorithm.adaptive_refit ?
-        max(state.algorithm.refit_interval, floor(Int, sqrt(trace.count))) :
-        state.algorithm.refit_interval
+    interval = refit_interval(state.algorithm.refit_schedule, trace.count)
     if force || isnothing(state.model) ||
             trace.count - state.observations_at_fit >= interval
         state.model = fitmodel(
@@ -193,35 +297,41 @@ function _ensure_smbo_workspace!(state::SMBOState, candidates, requested)
     return workspace
 end
 
-function _global_local_candidates(state::SMBOState, count, ::UniformCandidates)
-    return _sample_feasible(state.core, count, UniformDesign())
+function generate_candidates!(
+    destination,
+    state::SMBOState,
+    ::UniformCandidates,
+)
+    _sample_feasible!(
+        state.core.rng,
+        destination,
+        UniformDesign(),
+        state.core.problem,
+    )
+    return size(destination, 2)
 end
 
-function _global_local_candidates(state::SMBOState, count, sampler::GlobalLocalCandidates)
+function generate_candidates!(
+    candidates,
+    state::SMBOState,
+    sampler::EliteGaussianCandidates,
+)
     core = state.core
     T = eltype(core.trace.latent_points)
     d = dimension(core.problem.space)
-    candidates = Matrix{T}(undef, d, count)
-    global_count = clamp(round(Int, count * sampler.global_fraction), 1, count)
-    _sample_feasible!(
-        core.rng,
-        @view(candidates[:, 1:global_count]),
-        UniformDesign(),
-        core.problem,
-    )
-    global_count == count && return candidates
-
+    count = size(candidates, 2)
     trace = core.trace
+    trace.count == 0 && return 0
     order = sortperm(_loss.(Ref(core.problem.sense), objectivevalues(trace)))
     elite_count = clamp(round(Int, sqrt(trace.count)), 1, trace.count)
-    write = global_count
+    write = 0
     attempts = 0
     while write < count && attempts < 200count
         attempts += 1
         rank = Random.rand(core.rng, 1:elite_count)
         center = @view trace.latent_points[:, order[rank]]
         proposal = @view candidates[:, write + 1]
-        scale = T(sampler.local_scale) / sqrt(T(1 + core.iteration) / T(2))
+        scale = T(sampler.scale) / sqrt(T(1 + core.iteration) / T(2))
         for row in 1:d
             proposal[row] = center[row] + scale * Random.randn(core.rng, T)
         end
@@ -230,43 +340,118 @@ function _global_local_candidates(state::SMBOState, count, sampler::GlobalLocalC
         isfeasible(core.problem, decode(core.problem.space, proposal)) || continue
         write += 1
     end
-    if write < count
-        _sample_feasible!(
-            core.rng,
-            @view(candidates[:, write+1:count]),
-            UniformDesign(),
-            core.problem,
-        )
-    end
-    return candidates
+    return write
 end
 
-@inline function _same_candidate(left, right)
+function generate_candidates!(
+    candidates,
+    state::SMBOState,
+    sampler::MixtureCandidates,
+)
+    count = size(candidates, 2)
+    global_count = round(Int, count * sampler.global_fraction)
+    local_count = count - global_count
+    generated_global = global_count == 0 ? 0 : generate_candidates!(
+        @view(candidates[:, 1:global_count]),
+        state,
+        sampler.global_sampler,
+    )
+    generated_global == global_count || return generated_global
+    generated_local = local_count == 0 ? 0 : generate_candidates!(
+        @view(candidates[:, global_count+1:count]),
+        state,
+        sampler.local_sampler,
+    )
+    return global_count + generated_local
+end
+
+function _ensure_candidate_capacity!(workspace, rows, columns)
+    if size(workspace.candidates, 1) != rows ||
+            size(workspace.candidates, 2) < columns
+        workspace.candidates = Matrix{eltype(workspace.candidates)}(
+            undef,
+            rows,
+            columns,
+        )
+    end
+    return workspace
+end
+
+@inline function _same_candidate(left, right, ::ExactCandidateEquality)
     length(left) == length(right) || return false
-    tolerance = sqrt(eps(promote_type(eltype(left), eltype(right))))
     @inbounds for i in eachindex(left, right)
-        abs(left[i] - right[i]) <= tolerance || return false
+        isequal(left[i], right[i]) || return false
+    end
+    return true
+end
+@inline function _same_candidate(
+    left,
+    right,
+    equality::ApproximateCandidateEquality,
+)
+    length(left) == length(right) || return false
+    @inbounds for index in eachindex(left, right)
+        abs(left[index] - right[index]) <= equality.tolerance ||
+            return false
     end
     return true
 end
 
-function _is_duplicate(state::SMBOState, candidate, selected, selected_count)
-    state.algorithm.repeat_policy isa AllowRepeatedEvaluations && return false
+_is_duplicate(
+    ::AllowRepeatedEvaluations,
+    state,
+    candidate,
+    selected,
+    selected_count,
+) = false
+function _is_duplicate(
+    ::AvoidRepeatedEvaluations,
+    state,
+    candidate,
+    selected,
+    selected_count,
+)
     trace = state.core.trace
     for column in 1:trace.count
-        _same_candidate(candidate, @view(trace.latent_points[:, column])) && return true
+        _same_candidate(
+            candidate,
+            @view(trace.latent_points[:, column]),
+            state.algorithm.candidate_equality,
+        ) && return true
     end
     for pending in values(state.pending), column in axes(pending.points, 2)
         pending.unresolved[column] || continue
-        _same_candidate(candidate, @view(pending.points[:, column])) && return true
+        _same_candidate(
+            candidate,
+            @view(pending.points[:, column]),
+            state.algorithm.candidate_equality,
+        ) && return true
     end
     for column in 1:selected_count
-        _same_candidate(candidate, @view(selected[:, column])) && return true
+        _same_candidate(
+            candidate,
+            @view(selected[:, column]),
+            state.algorithm.candidate_equality,
+        ) && return true
     end
     return false
 end
+_is_duplicate(state::SMBOState, candidate, selected, selected_count) =
+    _is_duplicate(
+        state.algorithm.repeat_policy,
+        state,
+        candidate,
+        selected,
+        selected_count,
+    )
 
-function _predict_candidates!(state, means, variances, candidates)
+function _predict_candidates!(
+    state,
+    means,
+    variances,
+    candidates,
+    ::LowerConfidenceBound,
+)
     chunk = state.algorithm.prediction_chunk_size
     for first in 1:chunk:size(candidates, 2)
         last = min(first + chunk - 1, size(candidates, 2))
@@ -275,8 +460,23 @@ function _predict_candidates!(state, means, variances, candidates)
             @view(variances[first:last]),
             state.model,
             @view(candidates[:, first:last]),
+            state.workspace.prediction,
         )
     end
+    return means, variances
+end
+function _predict_candidates!(state, means, variances, candidates, ::GreedyMean)
+    chunk = state.algorithm.prediction_chunk_size
+    for first in 1:chunk:size(candidates, 2)
+        last = min(first + chunk - 1, size(candidates, 2))
+        predictmean!(
+            @view(means[first:last]),
+            state.model,
+            @view(candidates[:, first:last]),
+            state.workspace.prediction,
+        )
+    end
+    fill!(variances, zero(eltype(variances)))
     return means, variances
 end
 
@@ -298,27 +498,14 @@ function _penalized_score(
 )
     selected_count == 0 && return score
     distance_squared = minimum(1:selected_count) do column
-        sum(abs2, candidate .- @view(selected[:, column]))
+        _distance_squared(candidate, @view(selected[:, column]))
     end
     penalty = strategy.strength *
         exp(-distance_squared / (2strategy.radius^2))
     return score + penalty
 end
 
-function _deduplicated_fallback!(state, selected, count, requested)
-    attempts = 0
-    while count < requested && attempts < 100requested
-        attempts += 1
-        fallback = _sample_feasible(state.core, 1, UniformDesign())
-        candidate = @view fallback[:, 1]
-        _is_duplicate(state, candidate, selected, count) && continue
-        count += 1
-        selected[:, count] .= candidate
-    end
-    return count
-end
-
-function _occupied_count(state::SMBOState)
+function _occupied_count_scan(state::SMBOState)
     occupied = Set{Tuple}()
     trace = state.core.trace
     for column in 1:trace.count
@@ -330,10 +517,39 @@ function _occupied_count(state::SMBOState)
     end
     return length(occupied)
 end
+_tracks_occupancy(state::SMBOState) =
+    state.algorithm.repeat_policy isa AvoidRepeatedEvaluations &&
+    !isnothing(space_cardinality(state.core.problem.space)) &&
+    state.algorithm.candidate_equality isa ExactCandidateEquality
+_occupied_count(state::SMBOState) =
+    _tracks_occupancy(state) ? length(state.occupied) : _occupied_count_scan(state)
+function _occupy!(state::SMBOState, points)
+    _tracks_occupancy(state) || return state
+    for column in axes(points, 2)
+        push!(state.occupied, Tuple(@view points[:, column]))
+    end
+    return state
+end
+function _release_occupied!(state::SMBOState, pending, indices)
+    _tracks_occupancy(state) || return state
+    for index in indices
+        delete!(state.occupied, Tuple(@view pending.points[:, index]))
+    end
+    return state
+end
 
-function _deduplicate_candidates(state, candidates, requested)
-    state.algorithm.repeat_policy isa AllowRepeatedEvaluations &&
-        return candidates
+_deduplicate_candidates(
+    state,
+    candidates,
+    requested,
+    ::AllowRepeatedEvaluations,
+) = candidates
+function _deduplicate_candidates(
+    state,
+    candidates,
+    requested,
+    ::AvoidRepeatedEvaluations,
+)
     selected = Matrix{eltype(candidates)}(
         undef,
         size(candidates, 1),
@@ -347,15 +563,15 @@ function _deduplicate_candidates(state, candidates, requested)
         selected[:, count] .= candidate
         count == requested && break
     end
-    count < requested &&
-        (count = _deduplicated_fallback!(
-            state,
-            selected,
-            count,
-            requested,
-        ))
     return Matrix(@view selected[:, 1:count])
 end
+_deduplicate_candidates(state, candidates, requested) =
+    _deduplicate_candidates(
+        state,
+        candidates,
+        requested,
+        state.algorithm.repeat_policy,
+    )
 
 function _select_candidates(state::SMBOState, candidates, requested)
     workspace = _ensure_smbo_workspace!(state, candidates, requested)
@@ -368,7 +584,13 @@ function _select_candidates(state::SMBOState, candidates, requested)
     means = workspace.means
     variances = workspace.variances
     scores = workspace.scores
-    _predict_candidates!(state, means, variances, candidates)
+    _predict_candidates!(
+        state,
+        means,
+        variances,
+        candidates,
+        state.algorithm.acquisition,
+    )
     acquisitionvalues!(
         scores,
         state.algorithm.acquisition,
@@ -376,10 +598,16 @@ function _select_candidates(state::SMBOState, candidates, requested)
         variances,
         _loss(state.core.problem, state.core.best_value),
     )
-    shortlist_count = min(length(scores), max(32, 16requested))
-    order = partialsortperm(scores, 1:shortlist_count)
+    resize!(workspace.order, length(scores))
+    for index in eachindex(workspace.order)
+        workspace.order[index] = index
+    end
+    sortperm!(workspace.order, scores)
+    order = workspace.order
     count = 0
-    available = trues(length(order))
+    resize!(workspace.available, length(order))
+    fill!(workspace.available, true)
+    available = workspace.available
     while count < requested && any(available)
         choice = 0
         choice_score = eltype(scores)(Inf)
@@ -406,14 +634,6 @@ function _select_candidates(state::SMBOState, candidates, requested)
         _is_duplicate(state, candidate, selected, count) && continue
         count += 1
         selected[:, count] .= candidate
-    end
-    if count < requested
-        count = _deduplicated_fallback!(
-            state,
-            selected,
-            count,
-            requested,
-        )
     end
     return copy(@view selected[:, 1:count])
 end
@@ -484,13 +704,28 @@ function ask!(state::SMBOState, requested::Integer=state.algorithm.batch_size)
         )
     else
         pool_size = max(state.algorithm.candidate_pool, 8count)
-        pool = _global_local_candidates(state, pool_size, state.algorithm.candidate_sampler)
+        _ensure_candidate_capacity!(
+            state.workspace,
+            dimension(state.core.problem.space),
+            pool_size,
+        )
+        pool = @view state.workspace.candidates[:, 1:pool_size]
+        generated = generate_candidates!(
+            pool,
+            state,
+            state.algorithm.candidate_sampler,
+        )
+        pool = @view pool[:, 1:generated]
         candidates = _select_candidates(state, pool, count)
     end
     candidates = _deduplicate_candidates(state, candidates, count)
     count = size(candidates, 2)
     count == 0 && begin
-        state.core.retcode = :space_exhausted
+        !isnothing(cardinality) && _occupied_count(state) >= cardinality &&
+            (state.core.retcode = :space_exhausted)
+        state.core.retcode == :running && throw(CandidateGenerationError(
+            "candidate generator produced no usable candidates",
+        ))
         return CandidateBatch(
             UInt64(0),
             candidates,
@@ -500,6 +735,7 @@ function ask!(state::SMBOState, requested::Integer=state.algorithm.batch_size)
     identifier = state.next_identifier
     state.next_identifier += UInt64(1)
     state.pending[identifier] = PendingBatch(copy(candidates), trues(count))
+    _occupy!(state, candidates)
     return CandidateBatch(identifier, candidates, state.core.problem.space)
 end
 
@@ -560,6 +796,7 @@ tell!(state::SMBOState, batch::CandidateBatch, indices, values) =
 function cancel!(state::SMBOState, batch::CandidateBatch, indices)
     pending = _pending_batch(state, batch)
     selected = _validated_pending_indices(pending, indices)
+    _release_occupied!(state, pending, selected)
     _resolve_pending!(state, batch.identifier, pending, selected)
     return state
 end
@@ -578,6 +815,7 @@ function fail!(state::SMBOState, batch::CandidateBatch, indices, errors)
             (batch=batch.identifier, index=index, error=error),
         )
     end
+    _release_occupied!(state, pending, selected)
     _resolve_pending!(state, batch.identifier, pending, selected)
     return state
 end
@@ -595,7 +833,11 @@ function _resolve_explicit_pending!(state::SMBOState, candidates)
         for (identifier, pending) in collect(state.pending)
             matched = findfirst(axes(pending.points, 2)) do index
                 pending.unresolved[index] &&
-                    _same_candidate(candidate, @view(pending.points[:, index]))
+                    _same_candidate(
+                        candidate,
+                        @view(pending.points[:, index]),
+                        state.algorithm.candidate_equality,
+                    )
             end
             isnothing(matched) || begin
                 _resolve_pending!(state, identifier, pending, [matched])
@@ -620,15 +862,15 @@ function tell!(state::SMBOState, points, values)
     _resolve_explicit_pending!(state, latent)
     state.core.iteration += 1
     _commit_batch!(state.core, latent, converted; source=ExternalEvaluation)
+    _occupy!(state, latent)
     return state
 end
 
 function step!(state::SMBOState)
     batch = ask!(state)
-    if isempty(batch)
-        state.core.retcode = :evaluation_limit
-        return state
-    end
+    isempty(batch) && !_finished(state.core) &&
+        throw(AssertionError("ask! returned no candidates without terminating"))
+    isempty(batch) && return state
     values = _evaluate_batch(state.core, batch.latent_points)
     return _tell!(
         state,
@@ -764,5 +1006,16 @@ function restore(problem::Problem, saved::SMBOCheckpoint)
         Matrix{TX}(saved.initial_design),
         saved.initial_design_cursor,
         deepcopy(saved.workspace),
+        begin
+            occupied = Set{Tuple}()
+            for column in 1:core.trace.count
+                push!(occupied, Tuple(@view core.trace.latent_points[:, column]))
+            end
+            for batch in values(pending), column in axes(batch.points, 2)
+                batch.unresolved[column] &&
+                    push!(occupied, Tuple(@view batch.points[:, column]))
+            end
+            occupied
+        end,
     )
 end

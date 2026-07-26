@@ -42,10 +42,45 @@ tell!(state, batch, map(expensive_measurement, batch))
 Partial completion, cancellation, failure recording, and restart are available through
 `tell!(state, batch, indices, values)`, `cancel!`, `fail!`, `checkpoint`, and `restore`.
 
-The detailed behavioral contracts live in
-[`spec/api.md`](https://github.com/D3MZ/SAMBO.jl/blob/main/spec/api.md),
-[`spec/spaces.md`](https://github.com/D3MZ/SAMBO.jl/blob/main/spec/spaces.md), and
-[`spec/termination.md`](https://github.com/D3MZ/SAMBO.jl/blob/main/spec/termination.md).
+## Explicit policies
+
+Semantic choices are values passed to the algorithms:
+
+```julia
+SMBO(
+    refit_schedule=SquareRootRefit(2),
+    candidate_sampler=MixtureCandidates(
+        UniformCandidates(),
+        EliteGaussianCandidates(0.1);
+        global_fraction=0.25,
+    ),
+    candidate_equality=ApproximateCandidateEquality(1e-8),
+)
+
+SHGO(
+    topology=KNearestTopology(neighbors=8),
+    minimization_schedule=MinimizeAtTermination(),
+)
+```
+
+Candidate generation, topology, surrogate uncertainty, refitting, duplicate handling,
+and SHGO local-minimization timing are never changed by an implicit fallback.
+
+Deterministic SurrogatesBase models pair with `GreedyMean()`. Use
+`DistanceUncertainty(model)` only when distance-based uncertainty is deliberately part
+of the model.
+
+Search-space coordinates are parametric:
+
+```julia
+SearchSpace(Float32; x=Continuous(-1, 1), n=0:10)
+SearchSpace(BigFloat; x=Continuous(big"-1", big"1"))
+```
+
+`convergencedata` includes known observations at evaluation zero by default.
+`regretdata` counts evaluated observations only. Constrained partial dependence uses
+`FeasibleConditionalDependence()`; select `UnconstrainedModelDependence()` explicitly
+to query the fitted model without feasibility conditioning.
 
 ```@index
 ```

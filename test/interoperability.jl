@@ -61,6 +61,22 @@ end
     @test solution.stats.fevals == 10
     @test solution.original isa SAMBO.Result
     @test solution.u == SAMBO.minimizer(solution.original)
+
+    maximization_problem = OptimizationBase.OptimizationProblem(
+        (point, parameters) -> -(point[1] - 0.7)^2,
+        nothing;
+        lb=[0.0],
+        ub=[1.0],
+        sense=OptimizationBase.MaxSense,
+    )
+    maximized = OptimizationBase.solve(
+        maximization_problem,
+        SAMBO.SMBO(candidate_pool=32);
+        maxiters=12,
+        rng=MersenneTwister(60),
+    )
+    @test maximized.objective > -0.05
+    @test maximized.original.sense isa SAMBO.Maximize
 end
 NearestSurrogate() = NearestSurrogate(Vector{Float64}[], Float64[])
 function (surrogate::NearestSurrogate)(points)
@@ -81,6 +97,7 @@ end
         SAMBO.Box([-1.0, -1.0], [1.0, 1.0]);
         algorithm=SAMBO.SMBO(
             surrogate=NearestSurrogate(),
+            acquisition=SAMBO.GreedyMean(),
             candidate_pool=64,
         ),
         maximum_evaluations=10,
@@ -89,4 +106,31 @@ end
     @test SAMBO.evaluation_count(result) == 10
     @test isfinite(SAMBO.minimum(result))
     @test !isnothing(SAMBO.fittedmodel(result))
+
+    @test_throws MethodError SAMBO.minimize(
+        point -> sum(abs2, point),
+        SAMBO.Box([-1.0], [1.0]);
+        algorithm=SAMBO.SMBO(
+            surrogate=NearestSurrogate(),
+            acquisition=SAMBO.LowerConfidenceBound(),
+            initial_points=2,
+            candidate_pool=16,
+        ),
+        maximum_evaluations=4,
+        rng=MersenneTwister(51),
+    )
+
+    uncertain = SAMBO.minimize(
+        point -> sum(abs2, point),
+        SAMBO.Box([-1.0], [1.0]);
+        algorithm=SAMBO.SMBO(
+            surrogate=SAMBO.DistanceUncertainty(NearestSurrogate()),
+            acquisition=SAMBO.LowerConfidenceBound(),
+            initial_points=2,
+            candidate_pool=16,
+        ),
+        maximum_evaluations=4,
+        rng=MersenneTwister(52),
+    )
+    @test SAMBO.evaluation_count(uncertain) == 4
 end

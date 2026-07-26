@@ -15,6 +15,19 @@
     @test length(Tables.rows(observations(result))) == 12
     @test first(observations(result)).evaluation == 1
 
+    known = minimize(
+        x -> x[1]^2,
+        Box([0.0], [1.0]);
+        initial_points=[[0.25]],
+        initial_values=[0.0625],
+        maximum_evaluations=3,
+        rng=MersenneTwister(20),
+    )
+    @test first(convergencedata(known).evaluations) == 0
+    @test length(convergencedata(known).best) == 4
+    @test length(regretdata(known).regret) == 3
+    @test all(>(0), regretdata(known).evaluations)
+
     @test_throws ArgumentError evaluationsdata(result; dimensions=Int[])
     @test_throws ArgumentError partialdependence(result; dimensions=(1, 1))
     @test_throws ArgumentError partialdependence(result; dimensions=(3,))
@@ -41,6 +54,42 @@
     )
     @test length(discrete_dependence.grids[1]) == 2
     @test size(discrete_dependence.values) == (2,)
+    conditional = partialdependence(
+        constrained;
+        dimensions=(1,),
+        resolution=5,
+        samples=8,
+        rng=MersenneTwister(930),
+    )
+    @test isnan(conditional.values[end])
+    unconstrained = partialdependence(
+        constrained;
+        dimensions=(1,),
+        resolution=5,
+        samples=8,
+        dependence=UnconstrainedModelDependence(),
+        rng=MersenneTwister(930),
+    )
+    @test all(isfinite, unconstrained.values)
+    pd_workspace = PartialDependenceWorkspace(
+        Float64,
+        Float64,
+        SAMBO.dimension(constrained.space),
+        8,
+    )
+    query_storage = pd_workspace.queries
+    compact_storage = pd_workspace.feasible_queries
+    reused = partialdependence(
+        constrained;
+        dimensions=(1,),
+        resolution=5,
+        samples=8,
+        workspace=pd_workspace,
+        rng=MersenneTwister(930),
+    )
+    @test isequal(reused.values, conditional.values)
+    @test pd_workspace.queries === query_storage
+    @test pd_workspace.feasible_queries === compact_storage
 
     maximized = minimize(
         x -> -(x[1] - 0.4)^2,

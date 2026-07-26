@@ -1,22 +1,185 @@
+struct EvaluationsOnly end
+struct IncludeKnownObservations end
+struct FeasibleConditionalDependence end
+struct UnconstrainedModelDependence end
+
+mutable struct PartialDependenceWorkspace{TX,TY}
+    queries::Matrix{TX}
+    feasible_queries::Matrix{TX}
+    predictions::Vector{TY}
+end
+PartialDependenceWorkspace(::Type{TX}, ::Type{TY}, dimensions, samples) where {TX,TY} =
+    PartialDependenceWorkspace(
+        Matrix{TX}(undef, dimensions, samples),
+        Matrix{TX}(undef, dimensions, samples),
+        Vector{TY}(undef, samples),
+    )
+
+function _ensure_partial_dependence_workspace!(
+    workspace::PartialDependenceWorkspace,
+    dimensions,
+    samples,
+)
+    if size(workspace.queries, 1) != dimensions ||
+            size(workspace.queries, 2) < samples
+        workspace.queries = Matrix{eltype(workspace.queries)}(
+            undef,
+            dimensions,
+            samples,
+        )
+        workspace.feasible_queries = similar(workspace.queries)
+    end
+    length(workspace.predictions) < samples &&
+        resize!(workspace.predictions, samples)
+    return workspace
+end
+
+_diagnostic_indices(trace, ::IncludeKnownObservations) = 1:trace.count
+_diagnostic_indices(trace, ::EvaluationsOnly) =
+    findall(!=(KnownObservation), @view trace.source[1:trace.count])
+_running_best(::Minimize, values) = accumulate(min, values)
+_running_best(::Maximize, values) = accumulate(max, values)
+_regret(::Minimize, values, optimum) = values .- optimum
+_regret(::Maximize, values, optimum) = optimum .- values
+
 "Return evaluation indices and the running best objective."
-function convergencedata(result::Result)
-    values = objectivevalues(result.trace)
+function convergencedata(
+    result::Result;
+    observations=IncludeKnownObservations(),
+)
+    indices = _diagnostic_indices(result.trace, observations)
+    values = objectivevalues(result.trace)[indices]
     return (
-        evaluations=collect(@view result.trace.evaluation_numbers[1:result.trace.count]),
-        best=result.sense isa Minimize ?
-            accumulate(min, values) : accumulate(max, values),
+        evaluations=collect(result.trace.evaluation_numbers[indices]),
+        best=_running_best(result.sense, values),
     )
 end
 
 "Return cumulative regret relative to `optimum` (the observed minimum by default)."
-function regretdata(result::Result; optimum=minimum(result))
-    values = objectivevalues(result.trace)
+function regretdata(
+    result::Result;
+    optimum=minimum(result),
+    observations=EvaluationsOnly(),
+)
+    indices = _diagnostic_indices(result.trace, observations)
+    values = objectivevalues(result.trace)[indices]
     return (
-        evaluations=collect(@view result.trace.evaluation_numbers[1:result.trace.count]),
-        regret=cumsum(
-            result.sense isa Minimize ? values .- optimum : optimum .- values,
-        ),
+        evaluations=collect(result.trace.evaluation_numbers[indices]),
+        regret=cumsum(_regret(result.sense, values, optimum)),
     )
+end
+
+function _canonical_grid(
+    space::Box,
+    dimension_index,
+    resolution,
+    ::Type{T},
+) where {T}
+    return space.lower[dimension_index] == space.upper[dimension_index] ?
+        T[zero(T)] :
+        collect(range(zero(T), one(T); length=resolution))
+end
+function _canonical_grid(
+    space::SearchSpace,
+    dimension_index,
+    resolution,
+    ::Type{T},
+) where {T}
+    descriptor = space.dimensions[dimension_index]
+    grid = collect(range(zero(T), one(T); length=resolution))
+    map!(value -> T(canonicalize_coordinate(descriptor, value)), grid, grid)
+    unique!(grid)
+    return grid
+end
+
+_feasible_columns(result, queries, ::UnconstrainedModelDependence) =
+    axes(queries, 2)
+function _feasible_columns(result, queries, ::FeasibleConditionalDependence)
+    return findall(axes(queries, 2)) do column
+        isfeasible(
+            result.problem,
+            decode(result.space, @view queries[:, column]),
+        )
+    end
+end
+
+function _partial_mean!(
+    predictions,
+    feasible_queries,
+    result,
+    model,
+    queries,
+    policy,
+)
+    columns = _feasible_columns(result, queries, policy)
+    isempty(columns) && return eltype(predictions)(NaN)
+    selected = if length(columns) == size(queries, 2)
+        queries
+    else
+        compact = @view feasible_queries[:, 1:length(columns)]
+        for (destination, source) in enumerate(columns)
+            copyto!(@view(compact[:, destination]), @view(queries[:, source]))
+        end
+        compact
+    end
+    output = @view predictions[1:size(selected, 2)]
+    predictmean!(output, model, selected)
+    return _loss(result.sense, mean(output))
+end
+
+function _partial_dependence!(
+    values,
+    result,
+    model,
+    dimensions::NTuple{1,Int},
+    grids,
+    base,
+    workspace,
+    policy,
+)
+    queries = @view workspace.queries[:, 1:size(base, 2)]
+    predictions = workspace.predictions
+    for index in eachindex(grids[1])
+        copyto!(queries, base)
+        queries[dimensions[1], :] .= grids[1][index]
+        values[index] = _partial_mean!(
+            predictions,
+            workspace.feasible_queries,
+            result,
+            model,
+            queries,
+            policy,
+        )
+    end
+    return values
+end
+
+function _partial_dependence!(
+    values,
+    result,
+    model,
+    dimensions::NTuple{2,Int},
+    grids,
+    base,
+    workspace,
+    policy,
+)
+    queries = @view workspace.queries[:, 1:size(base, 2)]
+    predictions = workspace.predictions
+    for column in eachindex(grids[2]), row in eachindex(grids[1])
+        copyto!(queries, base)
+        queries[dimensions[1], :] .= grids[1][row]
+        queries[dimensions[2], :] .= grids[2][column]
+        values[row, column] = _partial_mean!(
+            predictions,
+            workspace.feasible_queries,
+            result,
+            model,
+            queries,
+            policy,
+        )
+    end
+    return values
 end
 
 function _checkdimensions(space, dimensions)
@@ -49,6 +212,8 @@ function partialdependence(
     samples=min(128, evaluation_count(result)),
     rng=Random.default_rng(),
     background=nothing,
+    dependence=FeasibleConditionalDependence(),
+    workspace=nothing,
 )
     dims = Tuple(_checkdimensions(result.space, dimensions))
     length(dims) in (1, 2) || throw(ArgumentError("select one or two dimensions"))
@@ -60,16 +225,10 @@ function partialdependence(
 
     TX = eltype(result.trace.latent_points)
     TY = eltype(result.trace.objective_values)
-    grids = ntuple(length(dims)) do index
-        grid = collect(range(zero(TX), one(TX); length=resolution))
-        for value_index in eachindex(grid)
-            coordinate = zeros(TX, dimension(result.space))
-            coordinate[dims[index]] = grid[value_index]
-            _canonicalize!(coordinate, result.space)
-            grid[value_index] = coordinate[dims[index]]
-        end
-        unique!(grid)
-    end
+    grids = ntuple(
+        index -> _canonical_grid(result.space, dims[index], resolution, TX),
+        length(dims),
+    )
     base = if isnothing(background)
         generated = Matrix{TX}(
             undef,
@@ -90,23 +249,22 @@ function partialdependence(
     end
     grid_sizes = length.(grids)
     values = Array{TY}(undef, grid_sizes...)
-    queries = copy(base)
-    predictions = Vector{TY}(undef, samples)
-    if length(dims) == 1
-        for i in eachindex(grids[1])
-            queries .= base
-            queries[dims[1], :] .= grids[1][i]
-            predictmean!(predictions, model, queries)
-            values[i] = _loss(result.sense, mean(predictions))
-        end
-    else
-        for j in eachindex(grids[2]), i in eachindex(grids[1])
-            queries .= base
-            queries[dims[1], :] .= grids[1][i]
-            queries[dims[2], :] .= grids[2][j]
-            predictmean!(predictions, model, queries)
-            values[i, j] = _loss(result.sense, mean(predictions))
-        end
-    end
+    pd_workspace = isnothing(workspace) ?
+        PartialDependenceWorkspace(TX, TY, dimension(result.space), samples) :
+        _ensure_partial_dependence_workspace!(
+            workspace,
+            dimension(result.space),
+            samples,
+        )
+    _partial_dependence!(
+        values,
+        result,
+        model,
+        dims,
+        grids,
+        base,
+        pd_workspace,
+        dependence,
+    )
     return (grids=grids, values=values, dimensions=dims)
 end

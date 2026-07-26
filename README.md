@@ -62,6 +62,45 @@ tell!(state, batch, map(expensive_measurement, batch))
 final = result(state)
 ```
 
+## Configuration policies
+
+Algorithm behavior that changes semantics is explicit:
+
+```julia
+smbo = SMBO(
+    refit_schedule=FixedRefit(4),
+    candidate_sampler=MixtureCandidates(
+        UniformCandidates(),
+        EliteGaussianCandidates(0.1);
+        global_fraction=0.25,
+    ),
+    candidate_equality=ApproximateCandidateEquality(1e-8),
+)
+
+shgo = SHGO(
+    topology=DelaunayTopology(),
+    minimization_schedule=MinimizeAtTermination(),
+)
+
+gp = GaussianProcessSurrogate(
+    length_scale=ARDLengthScale([0.2, 0.8]),
+    jitter=GeometricJitter(1e-10, 10.0, 8),
+)
+```
+
+Candidate generators report shortfalls instead of silently switching samplers.
+`DelaunayTopology()` reports degenerate complexes instead of substituting a
+nearest-neighbor graph; choose `KNearestTopology(neighbors=8)` explicitly when that
+topology is intended. Deterministic SurrogatesBase models use `GreedyMean()` or an
+explicit uncertainty wrapper such as `DistanceUncertainty(model)`.
+
+The coordinate type is independent of the objective type:
+
+```julia
+space32 = SearchSpace(Float32; x=Continuous(-1, 1), n=0:10)
+spacebig = SearchSpace(BigFloat; x=Continuous(big"-1", big"1"))
+```
+
 ## Plotting
 
 Loading Makie activates the diagnostic plotting extension:

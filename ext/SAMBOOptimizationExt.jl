@@ -26,18 +26,23 @@ function OptimizationBase.solve(
 )
     isnothing(problem.lb) &&
         throw(ArgumentError("SAMBO algorithms require lower and upper box bounds"))
-    problem.sense == OptimizationBase.MaxSense &&
-        throw(ArgumentError("SAMBO's OptimizationBase adapter currently supports minimization only"))
+    isnothing(problem.ub) &&
+        throw(ArgumentError("SAMBO algorithms require lower and upper box bounds"))
+    length(problem.lb) == length(problem.ub) ||
+        throw(DimensionMismatch("OptimizationProblem bounds differ in length"))
+    sense = problem.sense == OptimizationBase.MaxSense ?
+        SAMBO.Maximize() : SAMBO.Minimize()
     native_problem = SAMBO.Problem(
         point -> problem.f(point, problem.p),
         SAMBO.Box(vec(problem.lb), vec(problem.ub));
         constraint=_constraint(problem),
+        sense,
     )
     native_result = SAMBO.solve(
         native_problem,
         algorithm;
         maximum_evaluations,
-        initial_points=vec(problem.u0),
+        initial_points=isnothing(problem.u0) ? nothing : vec(problem.u0),
         kwargs...,
     )
     statistics = OptimizationBase.OptimizationStats(

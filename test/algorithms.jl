@@ -1,5 +1,21 @@
 rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
 
+mutable struct AcceptThenRejectRepair
+    remaining::Int
+end
+function SAMBO.repair!(
+    rng,
+    proposal,
+    policy::AcceptThenRejectRepair,
+    problem,
+    centroid,
+)
+    policy.remaining == 0 && return false
+    policy.remaining -= 1
+    SAMBO.project!(proposal, problem.space)
+    return true
+end
+
 @testset "algorithms" begin
     for algorithm in (
         SCEUA(),
@@ -116,6 +132,23 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
             [0.9],
         )
         @test moving[1] >= 0.8
+
+        repair_policy = AcceptThenRejectRepair(2)
+        repaired = solve(
+            Problem(_ -> 1.0, Box(fill(-1.0, 2), fill(1.0, 2))),
+            SCEUA(
+                complexes=2,
+                complex_size=3,
+                repair=repair_policy,
+            );
+            maximum_evaluations=9,
+            rng=MersenneTwister(101),
+        )
+        evaluated = [
+            Tuple(@view latentpoints(trace(repaired))[:, column])
+            for column in axes(latentpoints(trace(repaired)), 2)
+        ]
+        @test evaluated[end] ∉ evaluated[1:end-1]
     end
 
     @testset "stopping, initialization, and parallel evaluation" begin
@@ -131,8 +164,27 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
         @test retcode(callback_result) == :callback_stop
         @test evaluation_count(callback_result) == 3
         @test length(events) == 3
-        @test events[end] isa SAMBO.ProgressEvent
+        @test events[end] isa SAMBO.BatchProgressEvent
+        @test all(event -> event.batch_size == 1, events)
         @test all(event -> isfinite(event.best_value), events)
+
+        batch_events = Any[]
+        batch_state = init(
+            Problem(SearchSpace(x=Continuous(0.0, 1.0))),
+            SMBO(initial_points=3);
+            maximum_evaluations=3,
+            callback=event -> (push!(batch_events, event); false),
+            rng=MersenneTwister(120),
+        )
+        callback_batch = ask!(batch_state, 3)
+        tell!(
+            batch_state,
+            callback_batch,
+            [point.x^2 for point in callback_batch],
+        )
+        @test length(batch_events) == 1
+        @test only(batch_events).batch_size == 3
+        @test only(batch_events).evaluation == 3
 
         known = minimize(
             x -> abs2(x[1] - 0.25),
@@ -213,6 +265,10 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
         second_batch = ask!(state, 2)
         tell!(state, second_batch, [point.x^2 for point in second_batch])
         tell!(state, first_batch, [point.x^2 for point in first_batch])
+        if evaluation_count(result(state)) < 4
+            final_batch = ask!(state, 4 - evaluation_count(result(state)))
+            tell!(state, final_batch, [point.x^2 for point in final_batch])
+        end
         @test evaluation_count(result(state)) == 4
         @test retcode(result(state)) == :evaluation_limit
     end

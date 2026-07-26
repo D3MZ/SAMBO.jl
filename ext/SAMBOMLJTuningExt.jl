@@ -19,15 +19,22 @@ end
 mutable struct TuningState{S,F}
     solver::S
     fields::F
-    pending::Any
+    pending::Union{Nothing,SAMBO.CandidateBatch}
+    history_cursor::Int
 end
 
-function _dimension(range::MLJTuning.MLJBase.NumericRange{T}) where {T}
+function _dimension(
+    range::MLJTuning.MLJBase.NumericRange{T},
+) where {T<:Integer}
     isfinite(range.lower) && isfinite(range.upper) ||
         throw(ArgumentError("SAMBOTuning requires bounded numeric ranges"))
-    if T <: Integer
-        return round(Int, range.lower) : round(Int, range.upper)
-    end
+    return round(Int, range.lower):round(Int, range.upper)
+end
+function _dimension(
+    range::MLJTuning.MLJBase.NumericRange{T},
+) where {T<:AbstractFloat}
+    isfinite(range.lower) && isfinite(range.upper) ||
+        throw(ArgumentError("SAMBOTuning requires bounded numeric ranges"))
     return SAMBO.Continuous(range.lower, range.upper)
 end
 _dimension(range::MLJTuning.MLJBase.NominalRange) = SAMBO.Choices(range.values)
@@ -42,16 +49,21 @@ function MLJTuning.setup(tuning::_SAMBOTuning, model, user_range, n, verbosity)
         maximum_evaluations=n,
         rng=deepcopy(tuning.rng),
     )
-    return TuningState(solver, fields, nothing)
+    return TuningState(solver, fields, nothing, 0)
 end
 
 function _complete_pending!(state::TuningState, history)
     isnothing(state.pending) && return state
     count = length(state.pending)
-    length(history) >= count || return state
-    values = [entry.measurement[1] for entry in @view history[end-count+1:end]]
+    last = state.history_cursor + count
+    length(history) >= last || return state
+    values = [
+        history[index].measurement[1]
+        for index in state.history_cursor+1:last
+    ]
     SAMBO.tell!(state.solver, state.pending, values)
     state.pending = nothing
+    state.history_cursor = last
     return state
 end
 

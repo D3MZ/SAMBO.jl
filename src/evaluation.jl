@@ -1,26 +1,17 @@
 constraint_violation(::Unconstrained, point) = 0.0
 constraint_violation(::Unconstrained, point, parameters) = 0.0
-function constraint_violation(constraint, point)
-    value = constraint(point)
-    value isa Bool && return value ? 0.0 : 1.0
-    value isa Real ||
-        throw(ArgumentError("constraint must return Bool or a real violation"))
+@inline violation(value::Bool) = ifelse(value, 0.0, 1.0)
+@inline function violation(value::Real)
     return value
 end
-function constraint_violation(constraint, point, parameters)
-    if applicable(constraint, point, parameters)
-        value = constraint(point, parameters)
-        value isa Bool && return value ? 0.0 : 1.0
-        value isa Real ||
-            throw(ArgumentError("constraint must return Bool or a real violation"))
-        return value
-    end
-    return constraint_violation(constraint, point)
+function constraint_violation(constraint, point)
+    value = constraint(point)
+    value isa Real ||
+        throw(ArgumentError("constraint must return Bool or a real violation"))
+    return violation(value)
 end
 function constraint_violation(problem::Problem, point)
-    return isnothing(problem.parameters) ?
-        constraint_violation(problem.constraint, point) :
-        constraint_violation(problem.constraint, point, problem.parameters)
+    return constraint_violation(problem.constraint, point)
 end
 function isfeasible(problem::Problem, point)
     violation = constraint_violation(problem, point)
@@ -120,10 +111,18 @@ end
 _remaining(core::SolverCore) = max(0, core.criteria.maximum_evaluations - core.evaluations)
 _finished(core::SolverCore) = core.retcode != :running
 
-function _evaluate_batch(core::SolverCore, candidates)
-    values = Vector{eltype(core.trace.objective_values)}(undef, size(candidates, 2))
+function _evaluate_batch!(values, core::SolverCore, candidates)
+    length(values) == size(candidates, 2) ||
+        throw(DimensionMismatch("one value per candidate required"))
     evaluate!(values, core.executor, core.problem, candidates, core.nonfinite)
     return values
+end
+function _evaluate_batch(core::SolverCore, candidates)
+    values = Vector{eltype(core.trace.objective_values)}(
+        undef,
+        size(candidates, 2),
+    )
+    return _evaluate_batch!(values, core, candidates)
 end
 
 function _validated_values(core::SolverCore, candidates, values)
@@ -142,9 +141,8 @@ function _validated_values(core::SolverCore, candidates, values)
     return converted
 end
 
-function _update_stop!(
+function _update_best!(
     core::SolverCore,
-    latest_point,
     source::ObservationSource,
 )
     count = core.trace.count
@@ -158,17 +156,30 @@ function _update_stop!(
     else
         true
     end
-    if _isbetter(core.problem, latest, core.best_value)
+    if core.best_index == 0 ||
+            _isbetter(core.problem, latest, core.best_value)
         core.best_value = latest
         core.best_index = count
     end
     significant && source != KnownObservation &&
         (core.last_significant_improvement_evaluation = core.evaluations)
-    source == KnownObservation && return core
+    return core
+end
+
+function _update_stop!(core::SolverCore, latest_point, latest, batch_size)
     _finished(core) && return core
-    event = ProgressEvent(core.evaluations, core.iteration, latest, core.best_value, latest_point)
+    event = BatchProgressEvent(
+        core.evaluations,
+        core.iteration,
+        latest,
+        core.best_value,
+        latest_point,
+        batch_size,
+    )
     if core.callback(event)
         core.retcode = :callback_stop
+    elseif (time_ns() - core.started) / 1e9 >= core.criteria.time_limit
+        core.retcode = :time_limit
     elseif core.evaluations >= core.criteria.maximum_evaluations
         core.retcode = :evaluation_limit
     elseif core.iteration >= core.criteria.maximum_iterations
@@ -177,8 +188,6 @@ function _update_stop!(
             core.evaluations - core.last_significant_improvement_evaluation >=
                 core.criteria.stall_evaluations
         core.retcode = :stalled
-    elseif (time_ns() - core.started) / 1e9 >= core.criteria.time_limit
-        core.retcode = :time_limit
     end
     return core
 end
@@ -192,6 +201,8 @@ function _commit_batch!(
     count_evaluations = source != KnownObservation
     !count_evaluations || size(candidates, 2) <= _remaining(core) ||
         throw(ArgumentError("batch exceeds the remaining evaluation budget"))
+    batch_size = size(candidates, 2)
+    latest_point = nothing
     for column in axes(candidates, 2)
         count_evaluations && (core.evaluations += 1)
         _commit!(
@@ -203,9 +214,11 @@ function _commit_batch!(
             core.iteration,
             core.started,
         )
-        point = decode(core.problem.space, @view candidates[:, column])
-        _update_stop!(core, point, source)
+        latest_point = decode(core.problem.space, @view candidates[:, column])
+        _update_best!(core, source)
     end
+    count_evaluations && batch_size > 0 &&
+        _update_stop!(core, latest_point, values[batch_size], batch_size)
     return core
 end
 
@@ -243,9 +256,9 @@ function _result(core::SolverCore, algorithm, model=nothing; statistics=(iterati
             statistics,
         )
     end
-    index = core.best_index == 0 ?
-        argmin(_loss.(Ref(core.problem.sense), objectivevalues(core.trace))) :
-        core.best_index
+    core.best_index == 0 &&
+        throw(AssertionError("nonempty trace has no best observation"))
+    index = core.best_index
     point = decode(core.problem.space, @view core.trace.latent_points[:, index])
     return Result(
         core.problem,

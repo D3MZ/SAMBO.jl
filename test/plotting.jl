@@ -23,6 +23,33 @@ using CairoMakie
     end
 end
 
+@testset "Maximization plot semantics" begin
+    maximized = SAMBO.minimize(
+        x -> -(x[1] - 0.75)^2,
+        SAMBO.Box([0.0], [1.0]);
+        sense=SAMBO.Maximize(),
+        algorithm=SAMBO.SMBO(candidate_pool=32),
+        maximum_evaluations=8,
+        rng=MersenneTwister(300),
+    )
+    convergence = SAMBO.convergenceplot(maximized; optimum=0.0)
+    convergence_axis = only(filter(
+        block -> block isa CairoMakie.Axis,
+        convergence.content,
+    ))
+    @test convergence_axis.ylabel[] == "max f(x) after n evaluations"
+    @test SAMBO.argbest(maximized) ==
+        argmax(SAMBO.objectivevalues(SAMBO.trace(maximized)))
+
+    minimized = SAMBO.minimize(
+        x -> x[1]^2,
+        SAMBO.Box([0.0], [1.0]);
+        maximum_evaluations=4,
+        rng=MersenneTwister(301),
+    )
+    @test_throws ArgumentError SAMBO.regretplot((maximized, minimized))
+end
+
 @testset "Matrix plot layout fuzz" begin
     function check_matrix_layout(figure, count)
         axes = filter(block -> block isa CairoMakie.Axis, figure.content)

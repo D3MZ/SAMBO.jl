@@ -16,14 +16,27 @@ const _MATRIX_ROW_STEP = 156
 
 _results(result::SAMBO.Result) = (result,)
 _results(results) = Tuple(results)
+function _common_sense(results)
+    sense = first(results).sense
+    all(result -> typeof(result.sense) === typeof(sense), results) ||
+        throw(ArgumentError("plotting multiple results requires a common optimization sense"))
+    return sense
+end
+_best_label(::SAMBO.Minimize) = "min f(x) after n evaluations"
+_best_label(::SAMBO.Maximize) = "max f(x) after n evaluations"
+_optimum_label(::SAMBO.Minimize) = "True minimum"
+_optimum_label(::SAMBO.Maximize) = "True maximum"
 _resultlabels(labels, count) = isnothing(labels) ? nothing : begin
     collected = collect(labels)
     length(collected) == count ||
         throw(DimensionMismatch("one label per result is required"))
     collected
 end
-_plotscale(scale) = scale in (:log, :symlog) ? Symlog10(1) :
-    scale in (:linear, identity) ? identity : scale
+_plotscale(::Val{:log}) = log10
+_plotscale(::Val{:symlog}) = Symlog10(1)
+_plotscale(::Val{:linear}) = identity
+_plotscale(scale::Symbol) = _plotscale(Val(scale))
+_plotscale(scale) = scale === identity ? identity : scale
 
 function _trace_axis(position; title, xlabel, ylabel, xscale=identity, yscale=identity, axis=(;))
     defaults = (
@@ -83,12 +96,15 @@ function SAMBO.convergenceplot(
     axis=(;),
     figure=(;),
 )
+    result_tuple = _results(results)
+    isempty(result_tuple) && throw(ArgumentError("at least one result is required"))
+    sense = _common_sense(result_tuple)
     fig = Figure(; merge((size=(640, 480),), figure)...)
     ax = _trace_axis(
         fig[1, 1];
         title="Convergence",
         xlabel="Number of function evaluations n",
-        ylabel="min f(x) after n evaluations",
+        ylabel=_best_label(sense),
         xscale,
         yscale=scale,
         axis,
@@ -120,7 +136,7 @@ function SAMBO.convergenceplot!(axis, results; labels=nothing, optimum=nothing)
             color=:black,
             linestyle=:dash,
             linewidth=1,
-            label="True minimum",
+            label=_optimum_label(_common_sense(result_tuple)),
         )
     end
     maximum_evaluation = maximum(
@@ -143,6 +159,9 @@ function SAMBO.regretplot(
     axis=(;),
     figure=(;),
 )
+    result_tuple = _results(results)
+    isempty(result_tuple) && throw(ArgumentError("at least one result is required"))
+    _common_sense(result_tuple)
     fig = Figure(; merge((size=(640, 480),), figure)...)
     ax = _trace_axis(
         fig[1, 1];
@@ -160,7 +179,9 @@ end
 function SAMBO.regretplot!(axis, results; labels=nothing, optimum=nothing)
     result_tuple = _results(results)
     isempty(result_tuple) && throw(ArgumentError("at least one result is required"))
-    reference = isnothing(optimum) ? minimum(SAMBO.minimum, result_tuple) : optimum
+    sense = _common_sense(result_tuple)
+    reference = isnothing(optimum) ?
+        SAMBO.reference_value(sense, result_tuple) : optimum
     plot_labels = _resultlabels(labels, length(result_tuple))
     for (index, result) in pairs(result_tuple)
         regret = SAMBO.regretdata(result; optimum=reference)
@@ -331,7 +352,7 @@ function SAMBO.evaluationsplot!(
     data = SAMBO.evaluationsdata(result; dimensions=dims)
     labels = _dimensionlabels(result.space, dims, names)
     count = length(dims)
-    best = argmin(SAMBO.objectivevalues(SAMBO.trace(result)))
+    best = SAMBO.argbest(result)
     diagonal_axes = Axis[]
     colorplot = nothing
     for row in 1:count, column in 1:row
@@ -454,6 +475,8 @@ function SAMBO.objectiveplot!(
     isnothing(model) && throw(ArgumentError(
         "objectiveplot requires a fitted model; pass `model=` for non-model-based results",
     ))
+    plot_max_points >= 0 ||
+        throw(ArgumentError("plot_max_points must be nonnegative"))
     dims = SAMBO._checkdimensions(result.space, dimensions)
     labels = _dimensionlabels(result.space, dims, names)
     count = length(dims)
@@ -470,7 +493,7 @@ function SAMBO.objectiveplot!(
         SAMBO.UniformDesign(),
         result.problem,
     )
-    best = argmin(SAMBO.objectivevalues(SAMBO.trace(result)))
+    best = SAMBO.argbest(result)
     optimum_latent = isnothing(optimum) ? @view(points[:, best]) :
         SAMBO.encode(result.space, optimum)
     point_count = min(plot_max_points, size(points, 2))
@@ -502,7 +525,7 @@ function SAMBO.objectiveplot!(
             contour_maximum : contour_minimum + eps(float(contour_minimum))
         (contour_minimum, upper)
     else
-        (0.0, 1.0)
+        nothing
     end
     diagonal_axes = Axis[]
     colorplot = nothing

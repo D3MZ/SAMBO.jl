@@ -25,6 +25,12 @@ end
 struct SobolDesign <: AbstractDesign
     skip::Int
 end
+advance(design::SobolDesign, count) =
+    SobolDesign(skip=design.skip + count)
+advance(design::HaltonDesign, count) =
+    HaltonDesign(skip=design.skip + count)
+advance(design::UniformDesign, count) = design
+advance(design::LatinHypercubeDesign, count) = design
 function SobolDesign(; skip=0)
     skip >= 0 || throw(ArgumentError("Sobol skip must be nonnegative"))
     return SobolDesign(skip)

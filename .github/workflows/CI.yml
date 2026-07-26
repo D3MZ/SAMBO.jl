@@ -6,6 +6,8 @@ on:
     tags: ['*']
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 1'
 concurrency:
   # Skip intermediate builds: always.
   # Cancel intermediate builds: only if it is a pull request build.
@@ -45,6 +47,93 @@ jobs:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+  threaded:
+    name: Julia 1.12 - 4 threads
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      JULIA_NUM_THREADS: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+  core:
+    name: Core without weak dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v2
+      - name: Run core tests
+        run: julia --project=. test/core_runtests.jl
+  correctness:
+    name: Cross-runtime correctness matrix
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install sambo==1.25.2
+      - run: julia --project=. benchmark/correctness_julia.jl > julia-correctness.csv
+      - run: python benchmark/correctness_python.py > python-correctness.csv
+      - run: python benchmark/compare_correctness.py julia-correctness.csv python-correctness.csv
+  extensions:
+    name: Extension - ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: OptimizationBase
+            package: OptimizationBase
+            test: optimization
+          - name: MLJTuning
+            package: MLJTuning
+            test: mlj
+          - name: SurrogatesBase
+            package: SurrogatesBase
+            test: surrogates
+          - name: Makie
+            package: CairoMakie
+            test: makie
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v2
+      - name: Configure isolated extension environment
+        shell: julia --project=/tmp/sambo-extension --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.develop(path=pwd())
+          Pkg.add("${{ matrix.package }}")
+      - name: Test extension
+        run: julia --project=/tmp/sambo-extension test/extensions/${{ matrix.test }}.jl
+  inference:
+    name: Native inference checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v2
+      - name: Run JET checks
+        run: |
+          julia --project=/tmp/sambo-jet -e 'using Pkg; Pkg.develop(path=pwd()); Pkg.add("JET")'
+          julia --project=/tmp/sambo-jet test/inference.jl
   docs:
     name: Documentation
     runs-on: ubuntu-latest
@@ -65,10 +154,6 @@ jobs:
           Pkg.develop(PackageSpec(path=pwd()))
           Pkg.instantiate()
       - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-docdeploy@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
       - name: Run doctests
         shell: julia --project=docs --color=yes {0}
         run: |
@@ -76,3 +161,7 @@ jobs:
           using SAMBO
           DocMeta.setdocmeta!(SAMBO, :DocTestSetup, :(using SAMBO); recursive=true)
           doctest(SAMBO)
+      - uses: julia-actions/julia-docdeploy@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}

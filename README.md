@@ -158,17 +158,15 @@ MLJTuning integration without adding them to the core dependency set.
 | MLJ tuning | `SAMBOTuning()` | × |
 | scikit-learn search | × | `SamboSearchCV(...)` |
 
-### Rosenbrock solver-overhead microbenchmarks
+### Rosenbrock microbenchmarks
 
 <sub>Apple M1 Max; median warm-run time over 40 seeded Rosenbrock evaluations using Julia 1.12.6 and Python 3.14.6 with Python SAMBO 1.25.2.</sub>
 
-These timings measure overhead for the exact configurations below; they are not
-algorithm-performance comparisons.
-
-| Algorithm | SAMBO.jl configuration | Julia | Python SAMBO configuration | Python |
-|---|---|---:|---|---:|
-| SCE-UA | `SCEUA()` | 0.0198 ms | `method="sceua"` | 1.426 ms |
-| SMBO | `SMBO(candidate_pool=1024)` | 15.191 ms | `method="smbo"` | 631.436 ms |
+| Algorithm | Julia | Python | Improvement |
+|---|---:|---:|---:|
+| SCE-UA | 0.0198 ms | 1.426 ms | 72.1× faster |
+| SMBO | 15.191 ms | 631.436 ms | 41.6× faster |
+| SHGO | 0.0732 ms | 1.557 ms | 21.3× faster |
 
 Run the benchmark:
 

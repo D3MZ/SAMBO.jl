@@ -1,4 +1,4 @@
-name = "Sambo"
+name = "SAMBO"
 uuid = "bceef165-f388-4bd3-ba8d-0d00d2b9f72f"
 version = "0.1.0-DEV"
 authors = ["Demetrius Michael"]
@@ -19,10 +19,10 @@ OptimizationBase = "bca83a33-5cc9-4baa-983d-23429ab6bcbb"
 SurrogatesBase = "89f642e6-4179-4274-8202-c11f4bd9a72c"
 
 [extensions]
-SamboMakieExt = "Makie"
-SamboMLJTuningExt = "MLJTuning"
-SamboOptimizationExt = "OptimizationBase"
-SamboSurrogatesBaseExt = "SurrogatesBase"
+SAMBOMakieExt = "Makie"
+SAMBOMLJTuningExt = "MLJTuning"
+SAMBOOptimizationExt = "OptimizationBase"
+SAMBOSurrogatesBaseExt = "SurrogatesBase"
 
 [compat]
 CommonSolve = "0.2"

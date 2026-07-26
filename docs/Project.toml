@@ -1,3 +1,3 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
-Sambo = "bceef165-f388-4bd3-ba8d-0d00d2b9f72f"
+SAMBO = "bceef165-f388-4bd3-ba8d-0d00d2b9f72f"

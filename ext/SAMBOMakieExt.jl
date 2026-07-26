@@ -1,6 +1,6 @@
-module SamboMakieExt
+module SAMBOMakieExt
 
-using Sambo
+using SAMBO
 using Makie
 using Random
 
@@ -14,7 +14,7 @@ const _MATRIX_PANEL_SIZE = 130
 const _MATRIX_COLUMN_STEP = 150
 const _MATRIX_ROW_STEP = 156
 
-_results(result::Sambo.Result) = (result,)
+_results(result::SAMBO.Result) = (result,)
 _results(results) = Tuple(results)
 _resultlabels(labels, count) = isnothing(labels) ? nothing : begin
     collected = collect(labels)
@@ -73,7 +73,7 @@ function _trace_series!(axis, result, index, label, data)
     )
 end
 
-function Sambo.convergenceplot(
+function SAMBO.convergenceplot(
     results;
     labels=nothing,
     optimum=nothing,
@@ -93,16 +93,16 @@ function Sambo.convergenceplot(
         yscale=scale,
         axis,
     )
-    Sambo.convergenceplot!(ax, results; labels, optimum)
+    SAMBO.convergenceplot!(ax, results; labels, optimum)
     return fig
 end
 
-function Sambo.convergenceplot!(axis, results; labels=nothing, optimum=nothing)
+function SAMBO.convergenceplot!(axis, results; labels=nothing, optimum=nothing)
     result_tuple = _results(results)
     isempty(result_tuple) && throw(ArgumentError("at least one result is required"))
     plot_labels = _resultlabels(labels, length(result_tuple))
     for (index, result) in pairs(result_tuple)
-        convergence = Sambo.convergencedata(result)
+        convergence = SAMBO.convergencedata(result)
         label = isnothing(plot_labels) ?
             (length(result_tuple) > 1 ? "#$index" : nothing) : plot_labels[index]
         _trace_series!(
@@ -124,7 +124,7 @@ function Sambo.convergenceplot!(axis, results; labels=nothing, optimum=nothing)
         )
     end
     maximum_evaluation = maximum(
-        Sambo.evaluation_count(result) for result in result_tuple
+        SAMBO.evaluation_count(result) for result in result_tuple
     )
     tick_step = max(1, round(Int, maximum_evaluation / 9))
     axis.xticks = 0:tick_step:(maximum_evaluation + tick_step)
@@ -133,7 +133,7 @@ function Sambo.convergenceplot!(axis, results; labels=nothing, optimum=nothing)
     return axis
 end
 
-function Sambo.regretplot(
+function SAMBO.regretplot(
     results;
     labels=nothing,
     optimum=nothing,
@@ -153,17 +153,17 @@ function Sambo.regretplot(
         yscale=scale,
         axis,
     )
-    Sambo.regretplot!(ax, results; labels, optimum)
+    SAMBO.regretplot!(ax, results; labels, optimum)
     return fig
 end
 
-function Sambo.regretplot!(axis, results; labels=nothing, optimum=nothing)
+function SAMBO.regretplot!(axis, results; labels=nothing, optimum=nothing)
     result_tuple = _results(results)
     isempty(result_tuple) && throw(ArgumentError("at least one result is required"))
-    reference = isnothing(optimum) ? minimum(Sambo.minimum, result_tuple) : optimum
+    reference = isnothing(optimum) ? minimum(SAMBO.minimum, result_tuple) : optimum
     plot_labels = _resultlabels(labels, length(result_tuple))
     for (index, result) in pairs(result_tuple)
-        regret = Sambo.regretdata(result; optimum=reference)
+        regret = SAMBO.regretdata(result; optimum=reference)
         label = isnothing(plot_labels) ?
             (length(result_tuple) > 1 ? "#$index" : nothing) : plot_labels[index]
         _trace_series!(
@@ -175,7 +175,7 @@ function Sambo.regretplot!(axis, results; labels=nothing, optimum=nothing)
         )
     end
     maximum_evaluation = maximum(
-        Sambo.evaluation_count(result) for result in result_tuple
+        SAMBO.evaluation_count(result) for result in result_tuple
     )
     tick_step = max(1, round(Int, maximum_evaluation / 9))
     axis.xticks = 0:tick_step:(maximum_evaluation + tick_step)
@@ -207,7 +207,7 @@ end
 
 function _dimensionlabels(space, dims, names)
     labels = isnothing(names) ?
-        [Sambo._dimensionlabel(space, dimension) for dimension in dims] :
+        [SAMBO._dimensionlabel(space, dimension) for dimension in dims] :
         string.(collect(names))
     length(labels) == length(dims) ||
         throw(DimensionMismatch("one name per selected dimension is required"))
@@ -256,26 +256,26 @@ function _continuous_ticks(lower, upper)
     values = @. lower + positions * (upper - lower)
     return positions, _ticklabel.(values)
 end
-_plot_ticks(space::Sambo.Box, dimension) =
+_plot_ticks(space::SAMBO.Box, dimension) =
     _continuous_ticks(space.lower[dimension], space.upper[dimension])
-function _plot_ticks(space::Sambo.SearchSpace, dimension)
-    ticks = Sambo._dimensionticks(space, dimension)
+function _plot_ticks(space::SAMBO.SearchSpace, dimension)
+    ticks = SAMBO._dimensionticks(space, dimension)
     !isnothing(ticks) && return ticks
     descriptor = space.dimensions[dimension]
-    return descriptor isa Sambo.Continuous ?
+    return descriptor isa SAMBO.Continuous ?
         _continuous_ticks(descriptor.lower, descriptor.upper) : nothing
 end
 
 function _jitter(values, space, dimension, amount, rng)
-    isnothing(Sambo._dimensionticks(space, dimension)) && return values
+    isnothing(SAMBO._dimensionticks(space, dimension)) && return values
     output = collect(values)
     @. output += amount * randn(rng)
     return output
 end
 
-function Sambo.evaluationsplot(
-    result::Sambo.Result;
-    dimensions=1:size(Sambo.latentpoints(Sambo.trace(result)), 1),
+function SAMBO.evaluationsplot(
+    result::SAMBO.Result;
+    dimensions=1:size(SAMBO.latentpoints(SAMBO.trace(result)), 1),
     names=nothing,
     bins=10,
     jitter=0.02,
@@ -285,13 +285,13 @@ function Sambo.evaluationsplot(
     axis=(;),
     figure=(;),
 )
-    dims = Sambo._checkdimensions(result.space, dimensions)
+    dims = SAMBO._checkdimensions(result.space, dimensions)
     fig, grid = _matrix_figure(
         "Sequence & distribution of function evaluations",
         length(dims),
         figure,
     )
-    Sambo.evaluationsplot!(
+    SAMBO.evaluationsplot!(
         grid,
         result;
         dimensions=dims,
@@ -306,10 +306,10 @@ function Sambo.evaluationsplot(
     return fig
 end
 
-function Sambo.evaluationsplot!(
+function SAMBO.evaluationsplot!(
     position,
-    result::Sambo.Result;
-    dimensions=1:size(Sambo.latentpoints(Sambo.trace(result)), 1),
+    result::SAMBO.Result;
+    dimensions=1:size(SAMBO.latentpoints(SAMBO.trace(result)), 1),
     names=nothing,
     bins=10,
     jitter=0.02,
@@ -318,11 +318,11 @@ function Sambo.evaluationsplot!(
     colorbar=false,
     axis=(;),
 )
-    dims = Sambo._checkdimensions(result.space, dimensions)
-    data = Sambo.evaluationsdata(result; dimensions=dims)
+    dims = SAMBO._checkdimensions(result.space, dimensions)
+    data = SAMBO.evaluationsdata(result; dimensions=dims)
     labels = _dimensionlabels(result.space, dims, names)
     count = length(dims)
-    best = argmin(Sambo.objectivevalues(Sambo.trace(result)))
+    best = argmin(SAMBO.objectivevalues(SAMBO.trace(result)))
     diagonal_axes = Axis[]
     colorplot = nothing
     for row in 1:count, column in 1:row
@@ -388,14 +388,14 @@ function Sambo.evaluationsplot!(
     return position
 end
 
-function Sambo.objectiveplot(
-    result::Sambo.Result;
-    model=Sambo.fittedmodel(result),
-    dimensions=1:min(3, size(Sambo.latentpoints(Sambo.trace(result)), 1)),
+function SAMBO.objectiveplot(
+    result::SAMBO.Result;
+    model=SAMBO.fittedmodel(result),
+    dimensions=1:min(3, size(SAMBO.latentpoints(SAMBO.trace(result)), 1)),
     names=nothing,
     optimum=nothing,
     resolution=16,
-    samples=min(250, Sambo.evaluation_count(result)),
+    samples=min(250, SAMBO.evaluation_count(result)),
     levels=10,
     plot_max_points=200,
     rng=Random.default_rng(),
@@ -404,9 +404,9 @@ function Sambo.objectiveplot(
     axis=(;),
     figure=(;),
 )
-    dims = Sambo._checkdimensions(result.space, dimensions)
+    dims = SAMBO._checkdimensions(result.space, dimensions)
     fig, grid = _matrix_figure("Partial dependence", length(dims), figure)
-    Sambo.objectiveplot!(
+    SAMBO.objectiveplot!(
         grid,
         result;
         model,
@@ -425,15 +425,15 @@ function Sambo.objectiveplot(
     return fig
 end
 
-function Sambo.objectiveplot!(
+function SAMBO.objectiveplot!(
     position,
-    result::Sambo.Result;
-    model=Sambo.fittedmodel(result),
-    dimensions=1:min(3, size(Sambo.latentpoints(Sambo.trace(result)), 1)),
+    result::SAMBO.Result;
+    model=SAMBO.fittedmodel(result),
+    dimensions=1:min(3, size(SAMBO.latentpoints(SAMBO.trace(result)), 1)),
     names=nothing,
     optimum=nothing,
     resolution=16,
-    samples=min(250, Sambo.evaluation_count(result)),
+    samples=min(250, SAMBO.evaluation_count(result)),
     levels=10,
     plot_max_points=200,
     rng=Random.default_rng(),
@@ -444,13 +444,13 @@ function Sambo.objectiveplot!(
     isnothing(model) && throw(ArgumentError(
         "objectiveplot requires a fitted model; pass `model=` for non-model-based results",
     ))
-    dims = Sambo._checkdimensions(result.space, dimensions)
+    dims = SAMBO._checkdimensions(result.space, dimensions)
     labels = _dimensionlabels(result.space, dims, names)
     count = length(dims)
-    points = Sambo.latentpoints(Sambo.trace(result))
-    best = argmin(Sambo.objectivevalues(Sambo.trace(result)))
+    points = SAMBO.latentpoints(SAMBO.trace(result))
+    best = argmin(SAMBO.objectivevalues(SAMBO.trace(result)))
     optimum_latent = isnothing(optimum) ? @view(points[:, best]) :
-        Sambo.encode(result.space, optimum)
+        SAMBO.encode(result.space, optimum)
     point_indices = collect(1:min(plot_max_points, size(points, 2)))
     filter!(index -> index != best, point_indices)
     diagonal_axes = Axis[]
@@ -462,7 +462,7 @@ function Sambo.objectiveplot!(
         ax = _matrix_axis(position, row, column, count, labels, axis)
         if diagonal
             push!(diagonal_axes, ax)
-            dependence = Sambo.partialdependence(
+            dependence = SAMBO.partialdependence(
                 result;
                 model,
                 dimensions=(xdimension,),
@@ -486,7 +486,7 @@ function Sambo.objectiveplot!(
             )
             xlims!(ax, -0.05, 1.05)
         else
-            dependence = Sambo.partialdependence(
+            dependence = SAMBO.partialdependence(
                 result;
                 model,
                 dimensions=(xdimension, ydimension),

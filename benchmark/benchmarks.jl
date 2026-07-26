@@ -1,6 +1,6 @@
 using BenchmarkTools
 using Random
-using Sambo
+using SAMBO
 
 const BUDGET = 40
 const SEED = 42

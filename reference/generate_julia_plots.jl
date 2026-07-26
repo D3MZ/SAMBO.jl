@@ -1,45 +1,45 @@
 using CairoMakie
 using DelimitedFiles
 using Random
-using Sambo
+using SAMBO
 
 root = @__DIR__
 output = joinpath(root, "plots", "julia")
 mkpath(output)
 
 raw = readdlm(joinpath(root, "plots", "trace.csv"), ',', Float64; skipstart=1)
-space = Sambo.Box(fill(-1.0, 3), fill(1.0, 3))
-latent = reduce(hcat, (Sambo.encode(space, @view raw[row, 1:3]) for row in axes(raw, 1)))
+space = SAMBO.Box(fill(-1.0, 3), fill(1.0, 3))
+latent = reduce(hcat, (SAMBO.encode(space, @view raw[row, 1:3]) for row in axes(raw, 1)))
 values = vec(raw[:, 4])
-trace = Sambo.Trace{Float64}(3, length(values))
+trace = SAMBO.Trace{Float64}(3, length(values))
 trace.latent_points .= latent
 trace.objective_values .= values
 trace.feasible .= true
 trace.iterations .= eachindex(values)
 trace.elapsed_seconds .= 0
 trace.count = length(values)
-model = Sambo.fitmodel(
-    Sambo.GaussianProcessSurrogate(),
-    Sambo.latentpoints(trace),
-    Sambo.objectivevalues(trace),
+model = SAMBO.fitmodel(
+    SAMBO.GaussianProcessSurrogate(),
+    SAMBO.latentpoints(trace),
+    SAMBO.objectivevalues(trace),
     MersenneTwister(42),
 )
 best = argmin(values)
-result = Sambo.Result(
+result = SAMBO.Result(
     space,
-    Sambo.decode(space, @view latent[:, best]),
+    SAMBO.decode(space, @view latent[:, best]),
     values[best],
     trace,
     model,
-    Sambo.SMBO(),
+    SAMBO.SMBO(),
     :evaluation_limit,
     (evaluations=length(values), iterations=length(values)),
 )
 
 figures = (
-    convergence=Sambo.convergenceplot(result; optimum=0.0),
-    regret=Sambo.regretplot(result; optimum=0.0),
-    objective=Sambo.objectiveplot(
+    convergence=SAMBO.convergenceplot(result; optimum=0.0),
+    regret=SAMBO.regretplot(result; optimum=0.0),
+    objective=SAMBO.objectiveplot(
         result;
         dimensions=1:3,
         names=["x", "y", "z"],
@@ -47,7 +47,7 @@ figures = (
         samples=128,
         rng=MersenneTwister(42),
     ),
-    evaluations=Sambo.evaluationsplot(
+    evaluations=SAMBO.evaluationsplot(
         result;
         dimensions=1:3,
         names=["x", "y", "z"],

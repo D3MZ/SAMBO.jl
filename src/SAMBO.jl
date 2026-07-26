@@ -1,4 +1,4 @@
-module Sambo
+module SAMBO
 
 using LinearAlgebra
 using Statistics
@@ -28,7 +28,7 @@ function objectiveplot end
 function objectiveplot! end
 function evaluationsplot end
 function evaluationsplot! end
-function SamboTuning end
+function SAMBOTuning end
 
 export Problem, Result, Trace, StopCriteria, ProgressEvent
 export Box, SearchSpace, Continuous, Choices
@@ -43,6 +43,6 @@ export observations, latentpoints, objectivevalues, encode, decode
 export convergencedata, regretdata, partialdependence, evaluationsdata
 export convergenceplot, convergenceplot!, regretplot, regretplot!
 export objectiveplot, objectiveplot!, evaluationsplot, evaluationsplot!
-export SamboTuning
+export SAMBOTuning
 
 end

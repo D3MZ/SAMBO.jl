@@ -1,15 +1,15 @@
 ```@meta
-CurrentModule = Sambo
+CurrentModule = SAMBO
 ```
 
-# Sambo
+# SAMBO
 
-Sambo is a Julia-native global black-box optimizer with SCE-UA, SMBO, and SHGO,
+SAMBO is a Julia-native global black-box optimizer with SCE-UA, SMBO, and SHGO,
 mixed-variable spaces, constraints, ask/tell operation, observation tables, and optional
 Makie plots.
 
 ```@example getting-started
-using Sambo, Random
+using SAMBO, Random
 
 space = SearchSpace(
     count=0:20,
@@ -39,13 +39,13 @@ tell!(state, batch, map(expensive_measurement, batch))
 ```
 
 The detailed behavioral contracts live in
-[`spec/api.md`](https://github.com/D3MZ/Sambo.jl/blob/main/spec/api.md),
-[`spec/spaces.md`](https://github.com/D3MZ/Sambo.jl/blob/main/spec/spaces.md), and
-[`spec/termination.md`](https://github.com/D3MZ/Sambo.jl/blob/main/spec/termination.md).
+[`spec/api.md`](https://github.com/D3MZ/SAMBO.jl/blob/main/spec/api.md),
+[`spec/spaces.md`](https://github.com/D3MZ/SAMBO.jl/blob/main/spec/spaces.md), and
+[`spec/termination.md`](https://github.com/D3MZ/SAMBO.jl/blob/main/spec/termination.md).
 
 ```@index
 ```
 
 ```@autodocs
-Modules = [Sambo]
+Modules = [SAMBO]
 ```

@@ -13,8 +13,8 @@ mutable struct TuningDummy
 end
 
 @testset "MLJTuning extension" begin
-    tuning = Sambo.SamboTuning(
-        algorithm=Sambo.SMBO(candidate_pool=32, batch_size=1),
+    tuning = SAMBO.SAMBOTuning(
+        algorithm=SAMBO.SMBO(candidate_pool=32, batch_size=1),
         rng=MersenneTwister(13),
     )
     ranges = [
@@ -54,13 +54,13 @@ end
     )
     solution = OptimizationBase.solve(
         problem,
-        Sambo.SMBO(candidate_pool=64);
+        SAMBO.SMBO(candidate_pool=64);
         maxiters=10,
         rng=MersenneTwister(6),
     )
     @test solution.stats.fevals == 10
-    @test solution.original isa Sambo.Result
-    @test solution.u == Sambo.minimizer(solution.original)
+    @test solution.original isa SAMBO.Result
+    @test solution.u == SAMBO.minimizer(solution.original)
 end
 NearestSurrogate() = NearestSurrogate(Vector{Float64}[], Float64[])
 function (surrogate::NearestSurrogate)(points)
@@ -76,17 +76,17 @@ function SurrogatesBase.update!(surrogate::NearestSurrogate, points, values)
 end
 
 @testset "SurrogatesBase extension" begin
-    result = Sambo.minimize(
+    result = SAMBO.minimize(
         point -> sum(abs2, point),
-        Sambo.Box([-1.0, -1.0], [1.0, 1.0]);
-        algorithm=Sambo.SMBO(
+        SAMBO.Box([-1.0, -1.0], [1.0, 1.0]);
+        algorithm=SAMBO.SMBO(
             surrogate=NearestSurrogate(),
             candidate_pool=64,
         ),
         maximum_evaluations=10,
         rng=MersenneTwister(5),
     )
-    @test Sambo.evaluation_count(result) == 10
-    @test isfinite(Sambo.minimum(result))
-    @test !isnothing(Sambo.fittedmodel(result))
+    @test SAMBO.evaluation_count(result) == 10
+    @test isfinite(SAMBO.minimum(result))
+    @test !isnothing(SAMBO.fittedmodel(result))
 end

@@ -70,7 +70,7 @@ rosenbrock(x) = (1 - x[1])^2 + 100(x[2] - x[1]^2)^2
         @test retcode(callback_result) == :callback_stop
         @test evaluation_count(callback_result) == 3
         @test length(events) == 3
-        @test events[end] isa Sambo.ProgressEvent
+        @test events[end] isa SAMBO.ProgressEvent
         @test all(event -> isfinite(event.best_value), events)
 
         known = minimize(

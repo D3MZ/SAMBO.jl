@@ -17,4 +17,4 @@ stable identifier and owns its latent points; outstanding batches may be complet
 any order.
 
 Optional package extensions activate automatically for Makie, SurrogatesBase,
-OptimizationBase, and MLJTuning. `SamboTuning()` is the MLJTuning strategy constructor.
+OptimizationBase, and MLJTuning. `SAMBOTuning()` is the MLJTuning strategy constructor.

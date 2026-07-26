@@ -1,13 +1,13 @@
-# Sambo.jl
+# SAMBO.jl
 
-[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://D3MZ.github.io/Sambo.jl/dev/)
-[![CI](https://github.com/D3MZ/Sambo.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/D3MZ/Sambo.jl/actions/workflows/CI.yml)
-[![codecov](https://codecov.io/gh/D3MZ/Sambo.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/D3MZ/Sambo.jl)
+[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://D3MZ.github.io/SAMBO.jl/dev/)
+[![CI](https://github.com/D3MZ/SAMBO.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/D3MZ/SAMBO.jl/actions/workflows/CI.yml)
+[![codecov](https://codecov.io/gh/D3MZ/SAMBO.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/D3MZ/SAMBO.jl)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 Julia-native global black-box optimization with SCE-UA, surrogate model-based
 optimization (SMBO), and simplicial homology global optimization (SHGO).
-Sambo.jl supports continuous, integral, and categorical variables, constraints,
+SAMBO.jl supports continuous, integral, and categorical variables, constraints,
 ask/tell workflows, threaded evaluation, and optional ecosystem integrations.
 
 Attempts to be feature parity with Python's excellent SAMBO package.
@@ -15,13 +15,13 @@ Attempts to be feature parity with Python's excellent SAMBO package.
 ## Install
 
 ```julia
-pkg> add https://github.com/D3MZ/Sambo.jl
+pkg> add https://github.com/D3MZ/SAMBO.jl
 ```
 
 ## Quick start
 
 ```julia
-using Sambo, Random
+using SAMBO, Random
 
 space = SearchSpace(
     count = 0:99,
@@ -75,17 +75,24 @@ regretplot(result)
 objectiveplot(result)
 evaluationsplot(result)
 
+save("convergence.png", convergenceplot(result))
+save("regret.png", regretplot(result))
 save("objective.png", objectiveplot(result))
+save("evaluations.png", evaluationsplot(result))
 ```
 
-![Partial-dependence diagnostic](reference/plots/julia/objective.png)
+| Convergence | Regret |
+|---|---|
+| ![Convergence plot](reference/plots/julia/convergence.png) | ![Regret plot](reference/plots/julia/regret.png) |
+| **Objective / partial dependence** | **Evaluations** |
+| ![Objective partial-dependence plot](reference/plots/julia/objective.png) | ![Evaluation diagnostic plot](reference/plots/julia/evaluations.png) |
 
 Package extensions also provide SurrogatesBase, OptimizationBase, and
 MLJTuning integration without adding them to the core dependency set.
 
 ## Comparison with Python SAMBO
 
-| Feature | Sambo.jl | Python SAMBO |
+| Feature | SAMBO.jl | Python SAMBO |
 |---|---|---|
 | SCE-UA | `solve(problem, SCEUA())` | `minimize(f, bounds=bounds, method="sceua")` |
 | SMBO | `solve(problem, SMBO())` | `minimize(f, bounds=bounds, method="smbo")` |
@@ -97,8 +104,8 @@ MLJTuning integration without adding them to the core dependency set.
 | Tabular observations | `observations(result)` | × |
 | Diagnostic plots | `objectiveplot(result)` | `plot_objective(result)` |
 | Optimization.jl | `OptimizationBase.solve(problem, SCEUA())` | × |
-| MLJ tuning | `SamboTuning()` | × |
-| scikit-learn search | × | `SamboSearchCV(...)` |
+| MLJ tuning | `SAMBOTuning()` | × |
+| scikit-learn search | × | `SAMBOSearchCV(...)` |
 
 ### Rosenbrock microbenchmarks
 
@@ -106,9 +113,9 @@ MLJTuning integration without adding them to the core dependency set.
 
 | Algorithm | Julia | Python | Improvement |
 |---|---:|---:|---:|
-| SCE-UA | **0.0198 ms** | **1.426 ms** | **72.1× faster** |
-| SMBO | **15.191 ms** | **631.436 ms** | **41.6× faster** |
-| SHGO | **0.0732 ms** | **1.557 ms** | **21.3× faster** |
+| SCE-UA | 0.0198 ms | 1.426 ms | 72.1× faster |
+| SMBO | 15.191 ms | 631.436 ms | 41.6× faster |
+| SHGO | 0.0732 ms | 1.557 ms | 21.3× faster |
 
 Run the benchmark:
 
@@ -123,15 +130,15 @@ MIT © 2026 Demetrius Michael.
 
 ## Citation
 
-If you use Sambo.jl in research, cite:
+If you use SAMBO.jl in research, cite:
 
 ```bibtex
-@software{Michael_Sambo_jl_2026,
+@software{Michael_SAMBO_jl_2026,
   author  = {Michael, Demetrius},
-  title   = {{Sambo.jl}: Julia-native global black-box optimization},
+  title   = {{SAMBO.jl}: Julia-native global black-box optimization},
   year    = {2026},
   version = {0.1.0-DEV},
-  url     = {https://github.com/D3MZ/Sambo.jl}
+  url     = {https://github.com/D3MZ/SAMBO.jl}
 }
 ```
 

@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "c5a3b117c8bf83c8bc787298cf99515953f79467"
+project_hash = "3f967eb89fc8d22959244fe12861c70245ba5a12"
 
 [[deps.Accessors]]
 deps = ["CompositionsBase", "ConstructionBase", "Dates", "InverseFunctions", "MacroTools"]
@@ -293,27 +293,27 @@ deps = ["SHA"]
 uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 version = "1.11.0"
 
-[[deps.SHA]]
-uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
-version = "0.7.0"
-
-[[deps.Sambo]]
+[[deps.SAMBO]]
 deps = ["CommonSolve", "LinearAlgebra", "MiniQhull", "QuasiMonteCarlo", "Random", "Statistics", "Tables"]
 path = "."
 uuid = "bceef165-f388-4bd3-ba8d-0d00d2b9f72f"
 version = "0.1.0-DEV"
 
-    [deps.Sambo.extensions]
-    SamboMLJTuningExt = "MLJTuning"
-    SamboMakieExt = "Makie"
-    SamboOptimizationExt = "OptimizationBase"
-    SamboSurrogatesBaseExt = "SurrogatesBase"
+    [deps.SAMBO.extensions]
+    SAMBOMLJTuningExt = "MLJTuning"
+    SAMBOMakieExt = "Makie"
+    SAMBOOptimizationExt = "OptimizationBase"
+    SAMBOSurrogatesBaseExt = "SurrogatesBase"
 
-    [deps.Sambo.weakdeps]
+    [deps.SAMBO.weakdeps]
     MLJTuning = "03970b2e-30c4-11ea-3135-d1576263f10f"
     Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
     OptimizationBase = "bca83a33-5cc9-4baa-983d-23429ab6bcbb"
     SurrogatesBase = "89f642e6-4179-4274-8202-c11f4bd9a72c"
+
+[[deps.SHA]]
+uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+version = "0.7.0"
 
 [[deps.Sobol]]
 deps = ["DelimitedFiles", "Random"]

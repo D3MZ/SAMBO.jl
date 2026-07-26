@@ -1,18 +1,18 @@
 using CairoMakie
 
 @testset "Makie extension" begin
-    plot_result = Sambo.minimize(
+    plot_result = SAMBO.minimize(
         x -> sum(abs2, x),
-        Sambo.Box([-1.0, -1.0], [1.0, 1.0]);
-        algorithm=Sambo.SMBO(candidate_pool=64),
+        SAMBO.Box([-1.0, -1.0], [1.0, 1.0]);
+        algorithm=SAMBO.SMBO(candidate_pool=64),
         maximum_evaluations=10,
         rng=MersenneTwister(11),
     )
     figures = (
-        Sambo.convergenceplot(plot_result),
-        Sambo.regretplot(plot_result),
-        Sambo.evaluationsplot(plot_result),
-        Sambo.objectiveplot(plot_result; resolution=8, samples=8, rng=MersenneTwister(2)),
+        SAMBO.convergenceplot(plot_result),
+        SAMBO.regretplot(plot_result),
+        SAMBO.evaluationsplot(plot_result),
+        SAMBO.objectiveplot(plot_result; resolution=8, samples=8, rng=MersenneTwister(2)),
     )
     @test all(figure -> figure isa CairoMakie.Figure, figures)
     @test all(figure -> !isempty(figure.content), figures)
@@ -64,21 +64,21 @@ end
     end
 
     for dimensions in shuffle(MersenneTwister(731), collect(1:8))
-        space = Sambo.Box(fill(-1.0, dimensions), fill(1.0, dimensions))
-        result = Sambo.minimize(
+        space = SAMBO.Box(fill(-1.0, dimensions), fill(1.0, dimensions))
+        result = SAMBO.minimize(
             x -> sum(abs2, x),
             space;
-            algorithm=Sambo.SMBO(candidate_pool=32),
+            algorithm=SAMBO.SMBO(candidate_pool=32),
             maximum_evaluations=max(8, 2dimensions + 1),
             rng=MersenneTwister(dimensions),
         )
         names = ["long_variable_name_$index" for index in 1:dimensions]
-        evaluation_figure = Sambo.evaluationsplot(
+        evaluation_figure = SAMBO.evaluationsplot(
             result;
             names,
             rng=MersenneTwister(100 + dimensions),
         )
-        objective_figure = Sambo.objectiveplot(
+        objective_figure = SAMBO.objectiveplot(
             result;
             dimensions=1:dimensions,
             names,

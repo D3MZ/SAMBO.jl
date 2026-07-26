@@ -1,14 +1,14 @@
-using Sambo
+using SAMBO
 using Documenter
 
-DocMeta.setdocmeta!(Sambo, :DocTestSetup, :(using Sambo); recursive=true)
+DocMeta.setdocmeta!(SAMBO, :DocTestSetup, :(using SAMBO); recursive=true)
 
 makedocs(;
-    modules=[Sambo],
+    modules=[SAMBO],
     authors="Demetrius Michael",
-    sitename="Sambo.jl",
+    sitename="SAMBO.jl",
     format=Documenter.HTML(;
-        canonical="https://D3MZ.github.io/Sambo.jl",
+        canonical="https://D3MZ.github.io/SAMBO.jl",
         edit_link="main",
         assets=String[],
     ),
@@ -18,6 +18,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/D3MZ/Sambo.jl",
+    repo="github.com/D3MZ/SAMBO.jl",
     devbranch="main",
 )

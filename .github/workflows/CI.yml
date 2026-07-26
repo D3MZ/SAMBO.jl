@@ -74,6 +74,6 @@ jobs:
         shell: julia --project=docs --color=yes {0}
         run: |
           using Documenter: DocMeta, doctest
-          using Sambo
-          DocMeta.setdocmeta!(Sambo, :DocTestSetup, :(using Sambo); recursive=true)
-          doctest(Sambo)
+          using SAMBO
+          DocMeta.setdocmeta!(SAMBO, :DocTestSetup, :(using SAMBO); recursive=true)
+          doctest(SAMBO)

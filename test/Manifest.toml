@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "6db81fd6feaab11bc6626f30664f98e59579d073"
+project_hash = "e62c537a108c0c6390164c395d9300811e217418"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "ec6be48a85c93d995563b84bff8a86bc98df45ce"
@@ -1576,6 +1576,19 @@ git-tree-sha1 = "0e3eba2ca347b001baade9fb830623e04da64b38"
 uuid = "7e49a35a-f44a-4d26-94aa-eba1b4ca6b47"
 version = "0.5.22"
 
+[[deps.SAMBO]]
+deps = ["CommonSolve", "LinearAlgebra", "MiniQhull", "QuasiMonteCarlo", "Random", "Statistics", "Tables"]
+path = ".."
+uuid = "bceef165-f388-4bd3-ba8d-0d00d2b9f72f"
+version = "0.1.0-DEV"
+weakdeps = ["MLJTuning", "Makie", "OptimizationBase", "SurrogatesBase"]
+
+    [deps.SAMBO.extensions]
+    SAMBOMLJTuningExt = "MLJTuning"
+    SAMBOMakieExt = "Makie"
+    SAMBOOptimizationExt = "OptimizationBase"
+    SAMBOSurrogatesBaseExt = "SurrogatesBase"
+
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "0.7.0"
@@ -1585,19 +1598,6 @@ deps = ["PrecompileTools"]
 git-tree-sha1 = "e24dc23107d426a096d3eae6c165b921e74c18e4"
 uuid = "fdea26ae-647d-5447-a871-4b548cad5224"
 version = "3.7.2"
-
-[[deps.Sambo]]
-deps = ["CommonSolve", "LinearAlgebra", "MiniQhull", "QuasiMonteCarlo", "Random", "Statistics", "Tables"]
-path = ".."
-uuid = "bceef165-f388-4bd3-ba8d-0d00d2b9f72f"
-version = "0.1.0-DEV"
-weakdeps = ["MLJTuning", "Makie", "OptimizationBase", "SurrogatesBase"]
-
-    [deps.Sambo.extensions]
-    SamboMLJTuningExt = "MLJTuning"
-    SamboMakieExt = "Makie"
-    SamboOptimizationExt = "OptimizationBase"
-    SamboSurrogatesBaseExt = "SurrogatesBase"
 
 [[deps.SciMLBase]]
 deps = ["ADTypes", "Accessors", "Adapt", "ArrayInterface", "CommonSolve", "ConstructionBase", "Distributed", "DocStringExtensions", "EnumX", "FunctionWrappersWrappers", "IteratorInterfaceExtensions", "LinearAlgebra", "Logging", "Markdown", "Moshi", "PreallocationTools", "PrecompileTools", "Preferences", "Printf", "RecipesBase", "RecursiveArrayTools", "Reexport", "RuntimeGeneratedFunctions", "SciMLLogging", "SciMLOperators", "SciMLPublic", "SciMLStructures", "StaticArraysCore", "Statistics", "SymbolicIndexingInterface"]

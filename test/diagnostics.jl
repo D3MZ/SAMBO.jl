@@ -20,7 +20,7 @@
     @test_throws ArgumentError partialdependence(result; dimensions=(3,))
     @test_throws ArgumentError partialdependence(result; resolution=1)
 
-    empty_result = Sambo.result(init(Problem(Box([0.0], [1.0])), SMBO()))
+    empty_result = SAMBO.result(init(Problem(Box([0.0], [1.0])), SMBO()))
     @test isempty(convergencedata(empty_result).best)
     @test_throws ArgumentError partialdependence(empty_result)
 end

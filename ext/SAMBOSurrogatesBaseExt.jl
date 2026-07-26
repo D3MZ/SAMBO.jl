@@ -1,6 +1,6 @@
-module SamboSurrogatesBaseExt
+module SAMBOSurrogatesBaseExt
 
-using Sambo
+using SAMBO
 using Statistics
 import SurrogatesBase
 
@@ -17,7 +17,7 @@ function _pointvector(points)
     return [collect(column) for column in eachcol(points)]
 end
 
-function Sambo.fitmodel(
+function SAMBO.fitmodel(
     specification::SurrogatesBase.AbstractDeterministicSurrogate,
     points,
     values,
@@ -28,7 +28,7 @@ function Sambo.fitmodel(
     return DeterministicSurrogateModel(surrogate, Matrix(points))
 end
 
-function Sambo.fitmodel(
+function SAMBO.fitmodel(
     specification::SurrogatesBase.AbstractStochasticSurrogate,
     points,
     values,
@@ -39,7 +39,7 @@ function Sambo.fitmodel(
     return StochasticSurrogateModel(surrogate)
 end
 
-function Sambo.predictmeanvariance!(means, variances, model::DeterministicSurrogateModel, points)
+function SAMBO.predictmeanvariance!(means, variances, model::DeterministicSurrogateModel, points)
     predictions = model.surrogate(_pointvector(points))
     means .= predictions
     for column in axes(points, 2)
@@ -57,19 +57,19 @@ function Sambo.predictmeanvariance!(means, variances, model::DeterministicSurrog
     return means, variances
 end
 
-function Sambo.predictmean!(means, model::DeterministicSurrogateModel, points)
+function SAMBO.predictmean!(means, model::DeterministicSurrogateModel, points)
     means .= model.surrogate(_pointvector(points))
     return means
 end
 
-function Sambo.predictmeanvariance!(means, variances, model::StochasticSurrogateModel, points)
+function SAMBO.predictmeanvariance!(means, variances, model::StochasticSurrogateModel, points)
     posterior = SurrogatesBase.finite_posterior(model.surrogate, _pointvector(points))
     means .= mean(posterior)
     variances .= var(posterior)
     return means, variances
 end
 
-function Sambo.predictmean!(means, model::StochasticSurrogateModel, points)
+function SAMBO.predictmean!(means, model::StochasticSurrogateModel, points)
     posterior = SurrogatesBase.finite_posterior(model.surrogate, _pointvector(points))
     means .= mean(posterior)
     return means

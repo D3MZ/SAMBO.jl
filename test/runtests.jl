@@ -1,9 +1,9 @@
-using Sambo
+using SAMBO
 using Test
 using Random
 using Tables
 
-@testset "Sambo" begin
+@testset "SAMBO" begin
     include("spaces.jl")
     include("algorithms.jl")
     include("diagnostics.jl")

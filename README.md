@@ -194,6 +194,21 @@ Replace the saved files in `benchmark/results/` and run
 
 ### Cross-runtime solution-quality checks
 
+<sub>Each cell shows the median final objective and target hits across ten native
+trials from the latest passing matrix.</sub>
+
+| Algorithm | Problem (known optimum; target) | Julia | Python |
+|---|---|---:|---:|
+| SCE-UA | Hartmann-6 (−3.322; ≤ −2.8) | −3.320; 10/10 | −3.268; 9/10 |
+| SCE-UA | Rotated Rastrigin-5 (0; ≤ 12) | 10.266; 6/10 | 18.402; 1/10 |
+| SCE-UA | Rotated Rosenbrock-5 (0; ≤ 12) | 2.726; 10/10 | 4.914; 7/10 |
+| SMBO | Hartmann-6 (−3.322; ≤ −2.8) | −3.292; 10/10 | −2.330; 3/10 |
+| SMBO | Rotated Rastrigin-5 (0; ≤ 12) | 10.057; 7/10 | 29.802; 0/10 |
+| SMBO | Rotated Rosenbrock-5 (0; ≤ 12) | 50.758; 0/10 | 88.289; 1/10 |
+| SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −3.322; 10/10 | −3.322; 10/10 |
+| SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 13.432; 4/10 | 13.929; 2/10 |
+| SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 1.56e−08; 10/10 | 6.24e−08; 10/10 |
+
 The scheduled check tests whether each native Julia solver is non-inferior to
 the corresponding Python solver on Hartmann-6 and rotated five-dimensional
 Rastrigin and Rosenbrock problems. Both runtimes use the same objective formulas,

@@ -38,7 +38,7 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - name: Test cross-runtime comparator
@@ -69,7 +69,7 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
   core:
@@ -80,7 +80,7 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - name: Instantiate core environment
         run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
       - name: Run core tests
@@ -128,7 +128,7 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - name: Configure isolated extension environment
         shell: julia --project=/tmp/sambo-extension --color=yes {0}
         run: |
@@ -148,7 +148,7 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - name: Run JET checks
         run: |
           julia --project=/tmp/sambo-jet -e 'using Pkg; Pkg.develop(path=pwd()); Pkg.add("JET")'
@@ -161,7 +161,7 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - name: Instantiate test environment
         run: julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
       - name: Run allocation checks
@@ -178,7 +178,7 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - name: Configure doc environment
         shell: julia --project=docs --color=yes {0}
         run: |

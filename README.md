@@ -194,56 +194,26 @@ Replace the saved files in `benchmark/results/` and run
 
 ### Cross-runtime solution-quality checks
 
-Two profiles separate native solver quality from exact shared-input replay:
+The scheduled check tests whether each native Julia solver is non-inferior to
+the corresponding Python solver on Hartmann-6 and rotated five-dimensional
+Rastrigin and Rosenbrock problems. Both runtimes use the same objective formulas,
+bounds, maximum evaluation budgets, and ten trial identifiers. The rotated
+cases test conditioning and nonseparability. Python SHGO uses seeded Halton
+sampling so its trials are independent realizations.
 
-- `native-default-v1` checks one-sided Julia non-inferiority while each runtime
-  uses its native solver implementation and random-number generator.
-- `exact-v1` evaluates serialized shared initial populations, replacement
-  samples, candidate pools, acquisition coefficients, randomized SHGO samples,
-  and evaluation checkpoints. It uses a symmetric, unclipped equivalence gate.
+For each solver/problem group, the comparator independently bootstraps the
+median normalized log-regret in each runtime. The one-sided 95% upper bound on
+Julia minus Python must not exceed 0.25 decades. Regret is not clipped at a
+quality target. A separate absolute-quality gate requires Julia to reach the
+practical threshold in at least eight of ten trials.
 
-The native profile uses identical objective formulas and bounds. SCE-UA and SMBO
-use five trial identifiers; deterministic Python SHGO is treated as one
-realization rather than five nominally seeded copies.
-SCE-UA and SHGO received 1,000 evaluations and SMBO received 300. The rotated, shifted
-five-dimensional cases test multimodality, conditioning, and nonseparability
-robustness rather than rotation invariance of an axis-aligned box. Targets were
-fixed in the scripts before running the matrix.
-
-The scheduled gate separately requires at least four of five trials to reach
-practical quality thresholds of −2.0, 50, and 200 for Hartmann-6, Rastrigin-5,
-and Rosenbrock-5, then applies a 0.25-decade paired non-inferiority margin above
-those thresholds.
-
-<sub>Each cell: median final objective; target hits across the profile's trials. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
-
-<!-- correctness-table:start -->
-| Algorithm | Problem (known optimum; target) | Julia | Python |
-|---|---|---:|---:|
-| SCE-UA | Hartmann-6 (−3.322; ≤ −2.8) | −3.32; 5/5 | −3.276; 5/5 |
-| SCE-UA | Rotated Rastrigin-5 (0; ≤ 12) | 9.882; 3/5 | 17.258; 0/5 |
-| SCE-UA | Rotated Rosenbrock-5 (0; ≤ 12) | 2.598; 5/5 | 12.298; 2/5 |
-| SMBO | Hartmann-6 (−3.322; ≤ −2.8) | −3.262; 5/5 | −2.426; 2/5 |
-| SMBO | Rotated Rastrigin-5 (0; ≤ 12) | 8.568; 4/5 | 36.074; 0/5 |
-| SMBO | Rotated Rosenbrock-5 (0; ≤ 12) | 44.823; 0/5 | 99.929; 0/5 |
-| SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −3.29; 1/1 | −3.322; 1/1 |
-| SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 5.198; 1/1 | 2.985; 1/1 |
-| SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 8.504; 1/1 | 4.28e−09; 1/1 |
-<!-- correctness-table:end -->
-
-Reproduce the matrix:
+Reproduce the check:
 
 ```sh
 quality_dir=$(mktemp -d)
-julia --project=. benchmark/correctness_julia.jl --profile native-default-v1 > "$quality_dir/native-julia.csv"
-python3 benchmark/correctness_python.py --profile native-default-v1 > "$quality_dir/native-python.csv"
+julia --project=. benchmark/correctness_julia.jl > "$quality_dir/native-julia.csv"
+python3 benchmark/correctness_python.py > "$quality_dir/native-python.csv"
 python3 benchmark/compare_correctness.py "$quality_dir/native-julia.csv" "$quality_dir/native-python.csv"
-
-julia --project=. benchmark/correctness_julia.jl --profile exact-v1 > "$quality_dir/exact-julia.csv"
-python3 benchmark/correctness_python.py --profile exact-v1 > "$quality_dir/exact-python.csv"
-python3 benchmark/compare_correctness.py "$quality_dir/exact-julia.csv" "$quality_dir/exact-python.csv"
-
-python3 benchmark/update_correctness_readme.py README.md "$quality_dir/native-julia.csv" "$quality_dir/native-python.csv"
 ```
 
 ## Lines of Code Over Time

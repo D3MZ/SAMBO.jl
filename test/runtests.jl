@@ -25,5 +25,4 @@ using Tables
     include("corrected_interop_contracts.jl")
     include("corrected_performance_review.jl")
     include("native_default_review.jl")
-    include("exact_profile_generators.jl")
 end

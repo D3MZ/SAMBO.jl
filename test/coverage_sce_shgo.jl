@@ -188,6 +188,36 @@ end
     @test value == 0.25
     @test evaluation_count(result(constrained)) == 0
 
+    quasi_newton = init(
+        Problem(
+            x -> begin
+                first = x[1] + 2x[2]
+                second = 3x[1] - x[2]
+                first^2 + 25second^2
+            end,
+            Box(fill(-1.0, 2), fill(1.0, 2)),
+        ),
+        SHGO();
+        maximum_evaluations=100,
+        rng=MersenneTwister(825),
+    )
+    start = [0.9, 0.1]
+    start_value = quasi_newton.core.problem.objective(
+        decode(quasi_newton.core.problem.space, start),
+    )
+    point, value = SAMBO.local_minimize!(
+        quasi_newton,
+        quasi_newton.algorithm.local_solver,
+        start,
+        start_value,
+        zeros(2),
+        ones(2),
+        100,
+    )
+    @test value < 1e-10
+    @test maximum(abs, point .- 0.5) < 1e-5
+    @test evaluation_count(result(quasi_newton)) <= 100
+
     duplicate = init(
         Problem(x -> x[1]^2, Box([0.0], [1.0])),
         SHGO(

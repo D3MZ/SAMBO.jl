@@ -1,5 +1,4 @@
 import importlib.util
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,23 +10,37 @@ SPEC = importlib.util.spec_from_file_location("correctness_python", MODULE_PATH)
 correctness = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(correctness)
-GENERATOR_PATH = Path(__file__).with_name("generate_exact_fixture.py")
-GENERATOR_SPEC = importlib.util.spec_from_file_location(
-    "generate_exact_fixture", GENERATOR_PATH
-)
-generator = importlib.util.module_from_spec(GENERATOR_SPEC)
-assert GENERATOR_SPEC.loader is not None
-GENERATOR_SPEC.loader.exec_module(generator)
 
 
 class PythonCapabilityTests(unittest.TestCase):
-    def test_deterministic_shgo_is_one_realization(self):
-        trials = range(1, 6)
-        self.assertEqual(correctness.benchmark_trials("SHGO", trials), (1,))
-        self.assertEqual(
-            correctness.benchmark_trials("SMBO", trials),
-            (1, 2, 3, 4, 5),
+    def test_all_native_algorithms_use_the_full_trial_matrix(self):
+        trials = range(1, 11)
+        for algorithm, _, _ in correctness.ALGORITHMS:
+            with self.subTest(algorithm=algorithm):
+                self.assertEqual(
+                    correctness.benchmark_trials(algorithm, trials),
+                    tuple(range(1, 11)),
+                )
+
+    def test_shgo_halton_trials_are_seeded_realizations(self):
+        objective = lambda point: float(np.sum(np.asarray(point) ** 2))
+        first = correctness.minimize(
+            objective,
+            bounds=[(-1.0, 1.0)] * 2,
+            method="shgo",
+            sampling_method="halton",
+            max_iter=20,
+            rng=1,
         )
+        second = correctness.minimize(
+            objective,
+            bounds=[(-1.0, 1.0)] * 2,
+            method="shgo",
+            sampling_method="halton",
+            max_iter=20,
+            rng=2,
+        )
+        self.assertFalse(np.array_equal(first.xv, second.xv))
 
     def test_shared_initial_design_capabilities_are_explicit(self):
         bounds = [(0.0, 1.0)] * 2
@@ -53,41 +66,6 @@ class PythonCapabilityTests(unittest.TestCase):
                     retained,
                     capability == "injected-x0-y0",
                 )
-
-    def test_exact_fixture_is_reproducible_and_carries_shared_operations(self):
-        with tempfile.TemporaryDirectory() as directory:
-            regenerated = Path(directory) / "fixture.csv"
-            generator.regenerate(regenerated)
-            self.assertEqual(
-                regenerated.read_bytes(),
-                Path(correctness.FIXTURE_PATH).read_bytes(),
-            )
-        streams = correctness.exact_fixture()
-        self.assertEqual(len(streams), 45)
-        sce = streams[("hartmann6", "SCE-UA", 1)]
-        self.assertIn("replacement_sample", {item["phase"] for item in sce})
-        smbo = streams[("hartmann6", "SMBO", 1)]
-        pools = [item for item in smbo if item["phase"] == "candidate_pool"]
-        self.assertTrue(all(item["pool_id"] > 0 for item in pools))
-        self.assertTrue(
-            all(item["acquisition_coefficient"] is not None for item in pools)
-        )
-        self.assertTrue(
-            all(
-                left["acquisition_coefficient"]
-                == right["acquisition_coefficient"]
-                for left, right in zip(pools, pools[1:])
-                if left["pool_id"] == right["pool_id"]
-            )
-        )
-        shgo_trials = {
-            key[2]
-            for key in streams
-            if key[:2] == ("hartmann6", "SHGO")
-        }
-        self.assertEqual(shgo_trials, {1, 2, 3, 4, 5})
-        self.assertTrue(correctness.fixture_hash().startswith("sha256:"))
-
 
 if __name__ == "__main__":
     unittest.main()

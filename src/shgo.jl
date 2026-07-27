@@ -31,6 +31,36 @@ end
 initialstep(solver::PatternSearch) = solver.initial_step
 minimumstep(solver::PatternSearch) = solver.minimum_step
 
+struct QuasiNewtonSearch{T<:Real}
+    finite_difference_step::T
+    gradient_tolerance::T
+    minimum_step::T
+    function QuasiNewtonSearch(
+        finite_difference_step::T,
+        gradient_tolerance::T,
+        minimum_step::T,
+    ) where {T<:Real}
+        isfinite(finite_difference_step) && finite_difference_step > 0 ||
+            throw(ArgumentError("finite_difference_step must be finite and positive"))
+        isfinite(gradient_tolerance) && gradient_tolerance > 0 ||
+            throw(ArgumentError("gradient_tolerance must be finite and positive"))
+        isfinite(minimum_step) && minimum_step > 0 ||
+            throw(ArgumentError("minimum_step must be finite and positive"))
+        new{T}(finite_difference_step, gradient_tolerance, minimum_step)
+    end
+end
+function QuasiNewtonSearch(;
+    finite_difference_step=1e-7,
+    gradient_tolerance=1e-9,
+    minimum_step=1e-8,
+)
+    return QuasiNewtonSearch(promote(
+        finite_difference_step,
+        gradient_tolerance,
+        minimum_step,
+    )...)
+end
+
 """
 Experimental Delaunay/neighbor-graph multistart search.
 
@@ -402,9 +432,9 @@ end
 function SHGO(;
     sampling=RandomShiftedSampling(SobolDesign()),
     topology=DelaunayTopology(),
-    local_solver=PatternSearch(),
+    local_solver=QuasiNewtonSearch(),
     sampling_points=0,
-    local_starts=8,
+    local_starts=2,
     local_budget=0,
     minimum_homology_growth=0,
     homology_patience=2,
@@ -802,6 +832,180 @@ function local_minimize!(
     return copy(center), value
 end
 
+function _local_gradient!(
+    gradient,
+    state::SHGOState,
+    solver::QuasiNewtonSearch,
+    center,
+    value,
+    lower,
+    upper,
+)
+    core = state.core
+    workspace = state.workspace
+    TX = eltype(center)
+    d = length(center)
+    proposals = workspace.local_candidates
+    deltas = workspace.local_center
+    count = 0
+    for axis in 1:d
+        h = max(TX(solver.finite_difference_step), sqrt(eps(TX)))
+        delta = center[axis] + h <= upper[axis] ? h : -h
+        center[axis] + delta >= lower[axis] || return 0
+        count += 1
+        proposal = @view proposals[:, count]
+        copyto!(proposal, center)
+        proposal[axis] += delta
+        _canonicalize!(proposal, core.problem.space)
+        deltas[axis] = proposal[axis] - center[axis]
+        deltas[axis] != zero(TX) || return 0
+    end
+    values = @view workspace.local_values[1:count]
+    _evaluate_batch!(values, core, @view(proposals[:, 1:count]))
+    core.iteration += 1
+    _commit_batch!(core, @view(proposals[:, 1:count]), values)
+    center_loss = _loss(core.problem, value)
+    for axis in 1:d
+        gradient[axis] =
+            (_loss(core.problem, values[axis]) - center_loss) / deltas[axis]
+    end
+    return count
+end
+
+function local_minimize!(
+    state::SHGOState,
+    solver::QuasiNewtonSearch,
+    start,
+    start_value,
+    lower,
+    upper,
+    budget,
+)
+    if !(state.core.problem.constraint isa Unconstrained)
+        return local_minimize!(
+            state,
+            PatternSearch(),
+            start,
+            start_value,
+            lower,
+            upper,
+            budget,
+        )
+    end
+    core = state.core
+    TX = eltype(core.trace.latent_points)
+    d = length(start)
+    center = copy(start)
+    value = start_value
+    gradient = Vector{TX}(undef, d)
+    next_gradient = similar(gradient)
+    direction = similar(gradient)
+    step_vector = similar(gradient)
+    gradient_change = similar(gradient)
+    inverse_hessian = Matrix{TX}(I, d, d)
+    used = 0
+    gradient_cost = d
+    used + gradient_cost <= budget &&
+        gradient_cost <= _remaining(core) || return center, value
+    used += _local_gradient!(
+        gradient,
+        state,
+        solver,
+        center,
+        value,
+        lower,
+        upper,
+    )
+    while used < budget && !_finished(core)
+        all(isfinite, gradient) || break
+        norm(gradient, Inf) <= TX(solver.gradient_tolerance) && break
+        mul!(direction, inverse_hessian, gradient)
+        direction .*= -one(TX)
+        dot(gradient, direction) < zero(TX) || (direction .= -gradient)
+
+        accepted = false
+        trial_value = value
+        step = one(TX)
+        center_loss = _loss(core.problem, value)
+        while step >= TX(solver.minimum_step) &&
+                used < budget && !_finished(core)
+            proposal = @view state.workspace.local_candidates[:, 1]
+            for axis in 1:d
+                proposal[axis] = clamp(
+                    center[axis] + step * direction[axis],
+                    lower[axis],
+                    upper[axis],
+                )
+                step_vector[axis] = proposal[axis] - center[axis]
+            end
+            norm(step_vector, Inf) > eps(TX) || break
+            _canonicalize!(proposal, core.problem.space)
+            values = @view state.workspace.local_values[1:1]
+            _evaluate_batch!(
+                values,
+                core,
+                @view(state.workspace.local_candidates[:, 1:1]),
+            )
+            core.iteration += 1
+            _commit_batch!(
+                core,
+                @view(state.workspace.local_candidates[:, 1:1]),
+                values,
+            )
+            used += 1
+            trial_value = values[1]
+            trial_loss = _loss(core.problem, trial_value)
+            if isfinite(trial_loss) &&
+                    trial_loss <= center_loss +
+                        TX(1e-4) * dot(gradient, step_vector)
+                accepted = true
+                break
+            end
+            step /= TX(2)
+        end
+        accepted || break
+
+        center .+= step_vector
+        value = trial_value
+        used + gradient_cost <= budget &&
+            gradient_cost <= _remaining(core) || break
+        used += _local_gradient!(
+            next_gradient,
+            state,
+            solver,
+            center,
+            value,
+            lower,
+            upper,
+        )
+        gradient_change .= next_gradient .- gradient
+        curvature = dot(step_vector, gradient_change)
+        if isfinite(curvature) &&
+                curvature >
+                    sqrt(eps(TX)) * norm(step_vector) * norm(gradient_change)
+            hessian_gradient = inverse_hessian * gradient_change
+            correction =
+                (curvature + dot(gradient_change, hessian_gradient)) /
+                (curvature * curvature)
+            for column in 1:d, row in 1:d
+                inverse_hessian[row, column] +=
+                    correction * step_vector[row] * step_vector[column] -
+                    (
+                        hessian_gradient[row] * step_vector[column] +
+                        step_vector[row] * hessian_gradient[column]
+                    ) / curvature
+            end
+        else
+            fill!(inverse_hessian, zero(TX))
+            for axis in 1:d
+                inverse_hessian[axis, axis] = one(TX)
+            end
+        end
+        gradient .= next_gradient
+    end
+    return center, value
+end
+
 function _same_minimum(left, right)
     tolerance = 32sqrt(eps(promote_type(eltype(left), eltype(right))))
     return all(abs(left[i] - right[i]) <= tolerance for i in eachindex(left, right))
@@ -811,6 +1015,8 @@ function update_minimizer_pool!(state::SHGOState)
     workspace = state.workspace
     candidates = local_minimum_candidates(state)
     count = min(length(candidates), state.algorithm.local_starts)
+    automatic_budget = count == 0 ? 0 :
+        max(1, _remaining(state.core) ÷ count)
     previous_rank = workspace.homology_rank
     for candidate in @view candidates[1:count]
         _finished(state.core) && break
@@ -825,7 +1031,6 @@ function update_minimizer_pool!(state::SHGOState)
             candidate,
             state.algorithm.local_bounds,
         )
-        automatic_budget = max(32, 16dimension(state.core.problem.space))
         budget = state.algorithm.local_budget == 0 ?
             automatic_budget : state.algorithm.local_budget
         budget = min(budget, _remaining(state.core))

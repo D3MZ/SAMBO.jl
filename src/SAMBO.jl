@@ -77,6 +77,7 @@ export NumericalFailureError
 export Box, SearchSpace, Continuous, Choices
 export SMBO, SCEUA, SHGO, TopologicalMultistart, Serial, Threaded, CandidateBatch
 export DelaunayTopology, KNearestTopology, ComplexConstructionError
+export PatternSearch, QuasiNewtonSearch
 export MinimizeEveryRefinement, MinimizeAtTermination
 export RandomShiftedSampling, GlobalBoxLocalBounds, TopographicalLocalBounds
 export UniformDesign, LatinHypercubeDesign, HaltonDesign, SobolDesign

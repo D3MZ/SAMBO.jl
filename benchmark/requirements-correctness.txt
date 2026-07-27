@@ -1,4 +1,4 @@
-# Complete exact-version lock for the cross-runtime quality profiles.
+# Complete exact-version lock for the native cross-runtime quality check.
 joblib==1.5.3
 narwhals==2.24.0
 numpy==2.5.1

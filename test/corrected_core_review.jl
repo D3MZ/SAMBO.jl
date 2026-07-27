@@ -169,6 +169,13 @@ SAMBO.repair!(
 
     @testset "inner-constructor invariants" begin
         @test_throws ArgumentError SAMBO.PatternSearch(-1.0, 1e-5)
+        @test_throws ArgumentError SAMBO.QuasiNewtonSearch(
+            finite_difference_step=0,
+        )
+        @test_throws ArgumentError SAMBO.QuasiNewtonSearch(
+            gradient_tolerance=0,
+        )
+        @test_throws ArgumentError SAMBO.QuasiNewtonSearch(minimum_step=0)
         @test_throws ArgumentError GeometricJitter(-1.0, 10.0, 8)
         @test_throws ArgumentError LocalPenalization(-1.0, 0.1)
         @test_throws ArgumentError MixtureCandidates(

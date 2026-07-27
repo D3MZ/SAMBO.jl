@@ -66,7 +66,7 @@ function MixtureCandidates(
         global_fraction,
     )
 end
-GlobalLocalCandidates(; global_fraction=0.35, local_scale=0.15) =
+GlobalLocalCandidates(; global_fraction=0.25, local_scale=0.1) =
     MixtureCandidates(
         UniformCandidates(),
         EliteGaussianCandidates(local_scale);

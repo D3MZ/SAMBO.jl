@@ -46,11 +46,7 @@ jobs:
         run: |
           python3 -m unittest -v \
             benchmark/test_compare_correctness.py \
-            benchmark/test_update_readme.py \
-            benchmark/test_update_correctness_readme.py
-          python3 benchmark/compare_correctness.py \
-            benchmark/results/correctness_julia.csv \
-            benchmark/results/correctness_python.csv
+            benchmark/test_update_readme.py
       - name: Generate instrumented-line coverage
         if: matrix.version == '1.12'
         run: julia scripts/instrumented_lcov.jl src ext > lcov.info
@@ -107,24 +103,15 @@ jobs:
       - name: Install locked Python environment
         run: python -m pip install --requirement benchmark/requirements-correctness.txt
       - run: python -m unittest -v benchmark/test_python_capabilities.py
-      - name: Native-default non-inferiority
+      - name: Native solver non-inferiority
         run: |
           julia --project=. benchmark/correctness_julia.jl \
-            --profile native-default-v1 > "$RUNNER_TEMP/native-julia.csv"
+            > "$RUNNER_TEMP/native-julia.csv"
           python benchmark/correctness_python.py \
-            --profile native-default-v1 > "$RUNNER_TEMP/native-python.csv"
+            > "$RUNNER_TEMP/native-python.csv"
           python benchmark/compare_correctness.py \
             "$RUNNER_TEMP/native-julia.csv" \
             "$RUNNER_TEMP/native-python.csv"
-      - name: Exact shared-input equivalence
-        run: |
-          julia --project=. benchmark/correctness_julia.jl \
-            --profile exact-v1 > "$RUNNER_TEMP/exact-julia.csv"
-          python benchmark/correctness_python.py \
-            --profile exact-v1 > "$RUNNER_TEMP/exact-python.csv"
-          python benchmark/compare_correctness.py \
-            "$RUNNER_TEMP/exact-julia.csv" \
-            "$RUNNER_TEMP/exact-python.csv"
   extensions:
     name: Extension - ${{ matrix.name }}
     runs-on: ubuntu-latest

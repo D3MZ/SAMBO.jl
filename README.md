@@ -233,6 +233,14 @@ python3 benchmark/compare_correctness.py julia-correctness.csv python-correctnes
 python3 benchmark/update_correctness_readme.py README.md julia-correctness.csv python-correctness.csv
 ```
 
+## Lines of Code Over Time
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/loc-history-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset=".github/loc-history-light.svg">
+  <img src=".github/loc-history.svg" alt="Lines of code over time">
+</picture>
+
 ## License
 
 MIT © 2026 Demetrius Michael.

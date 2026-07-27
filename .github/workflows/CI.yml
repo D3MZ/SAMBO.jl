@@ -97,6 +97,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
+      - name: Instantiate Julia environment
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
       - run: python -m pip install sambo==1.25.2 joblib scikit-learn
       - run: python -m unittest -v benchmark/test_python_capabilities.py
       - run: julia --project=. benchmark/correctness_julia.jl > julia-correctness.csv
@@ -160,6 +162,8 @@ jobs:
         with:
           version: '1.12'
       - uses: julia-actions/cache@v2
+      - name: Instantiate test environment
+        run: julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
       - name: Run allocation checks
         run: julia --project=test -e 'using SAMBO, Random, Test; include("test/allocations.jl")'
   docs:

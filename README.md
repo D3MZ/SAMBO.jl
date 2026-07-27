@@ -194,20 +194,20 @@ Replace the saved files in `benchmark/results/` and run
 
 ### Cross-runtime solution-quality checks
 
-<sub>Each cell shows the median final objective and target hits across ten native
+<sub>Each runtime column shows the median final objective across ten native
 trials from the latest passing matrix.</sub>
 
-| Algorithm | Problem (known optimum; target) | Julia | Python |
+| Algorithm | Problem (known optimum) | Julia median | Python median |
 |---|---|---:|---:|
-| SCE-UA | Hartmann-6 (−3.322; ≤ −2.8) | −3.320; 10/10 | −3.268; 9/10 |
-| SCE-UA | Rotated Rastrigin-5 (0; ≤ 12) | 10.266; 6/10 | 18.402; 1/10 |
-| SCE-UA | Rotated Rosenbrock-5 (0; ≤ 12) | 2.726; 10/10 | 4.914; 7/10 |
-| SMBO | Hartmann-6 (−3.322; ≤ −2.8) | −3.292; 10/10 | −2.330; 3/10 |
-| SMBO | Rotated Rastrigin-5 (0; ≤ 12) | 10.057; 7/10 | 29.802; 0/10 |
-| SMBO | Rotated Rosenbrock-5 (0; ≤ 12) | 50.758; 0/10 | 88.289; 1/10 |
-| SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −3.322; 10/10 | −3.322; 10/10 |
-| SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 13.432; 4/10 | 13.929; 2/10 |
-| SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 1.56e−08; 10/10 | 6.24e−08; 10/10 |
+| SCE-UA | Hartmann-6 (−3.322) | −3.320 | −3.268 |
+| SCE-UA | Rotated Rastrigin-5 (0) | 10.266 | 18.402 |
+| SCE-UA | Rotated Rosenbrock-5 (0) | 2.726 | 4.914 |
+| SMBO | Hartmann-6 (−3.322) | −3.292 | −2.330 |
+| SMBO | Rotated Rastrigin-5 (0) | 10.057 | 29.802 |
+| SMBO | Rotated Rosenbrock-5 (0) | 50.758 | 88.289 |
+| SHGO | Hartmann-6 (−3.322) | −3.322 | −3.322 |
+| SHGO | Rotated Rastrigin-5 (0) | 13.432 | 13.929 |
+| SHGO | Rotated Rosenbrock-5 (0) | 1.56e−08 | 6.24e−08 |
 
 The scheduled check tests whether each native Julia solver is non-inferior to
 the corresponding Python solver on Hartmann-6 and rotated five-dimensional
@@ -218,9 +218,8 @@ sampling so its trials are independent realizations.
 
 For each solver/problem group, the comparator independently bootstraps the
 median normalized log-regret in each runtime. The one-sided 95% upper bound on
-Julia minus Python must not exceed 0.25 decades. Regret is not clipped at a
-quality target. A separate absolute-quality gate requires Julia to reach the
-practical threshold in at least eight of ten trials.
+Julia minus Python must not exceed 0.25 decades. This is the only quality gate;
+there are no target-hit or absolute-threshold checks.
 
 Reproduce the check:
 

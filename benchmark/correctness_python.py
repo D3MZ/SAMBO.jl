@@ -90,24 +90,18 @@ CASES = (
         hartmann6,
         [(0.0, 1.0)] * 6,
         -3.322368011415515,
-        -2.8,
-        -2.0,
     ),
     (
         "rotated_rastrigin5",
         rotated_rastrigin,
         [(-5.12, 5.12)] * 5,
         0.0,
-        12.0,
-        50.0,
     ),
     (
         "rotated_rosenbrock5",
         rotated_rosenbrock,
         [(-3.0, 3.0)] * 5,
         0.0,
-        12.0,
-        200.0,
     ),
 )
 ALGORITHMS = (
@@ -174,17 +168,13 @@ def main(trials=DEFAULT_TRIALS):
             "normalized_gap",
             "minimum",
             "optimum",
-            "target",
-            "quality_target",
-            "required_hit_rate",
             "noninferiority_margin",
             "feasible",
             "duplicate",
             "retcode",
-            "success",
         )
     )
-    for problem, objective, bounds, optimum, target, quality_target in CASES:
+    for problem, objective, bounds, optimum in CASES:
         for algorithm, method, budget in ALGORITHMS:
             for trial_id in benchmark_trials(algorithm, trials):
                 initial_point = shared_initial_point(
@@ -228,7 +218,7 @@ def main(trials=DEFAULT_TRIALS):
                         "Python objective calls exceeded the requested budget"
                     )
                 configuration_hash = (
-                    f"native-noninferiority-v2:{algorithm}:{budget}"
+                    f"native-noninferiority-v3:{algorithm}:{budget}"
                 )
                 design_hash = (
                     initial_design_hash(problem, trial_id)
@@ -270,14 +260,10 @@ def main(trials=DEFAULT_TRIALS):
                             f"{normalized_gap(best, optimum):.17g}",
                             f"{best:.17g}",
                             optimum,
-                            target,
-                            quality_target,
-                            0.8,
                             0.25,
                             "true",
                             str(duplicate).lower(),
                             result_code,
-                            str(best <= target).lower(),
                         )
                     )
 

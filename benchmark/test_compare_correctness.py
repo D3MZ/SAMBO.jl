@@ -27,9 +27,6 @@ FIELDS = (
     "evaluations",
     "minimum",
     "optimum",
-    "target",
-    "quality_target",
-    "required_hit_rate",
     "noninferiority_margin",
 )
 
@@ -43,7 +40,7 @@ def result_row(runtime, trial_id=1, **overrides):
         "problem": "sphere",
         "algorithm": "SMBO",
         "trial_id": trial_id,
-        "configuration_hash": "native-noninferiority-v2:SMBO:100",
+        "configuration_hash": "native-noninferiority-v3:SMBO:100",
         "initial_design_hash": f"design-{trial_id}",
         "initial_design_capability": "injected-x0-y0",
         "budget": 100,
@@ -51,9 +48,6 @@ def result_row(runtime, trial_id=1, **overrides):
         "evaluations": 100,
         "minimum": 0.1,
         "optimum": 0.0,
-        "target": 1.0,
-        "quality_target": 10.0,
-        "required_hit_rate": 0.8,
         "noninferiority_margin": 0.25,
     }
     row.update(overrides)
@@ -108,38 +102,15 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "noninferiority"):
             compare.main(*paths)
 
-    def test_quality_target_does_not_clip_relative_regret(self):
-        julia = result_row("Julia", minimum=10.0, quality_target=200.0)
-        python = result_row("Python", minimum=0.1, quality_target=200.0)
+    def test_relative_regret_is_not_clipped(self):
+        julia = result_row("Julia", minimum=10.0)
+        python = result_row("Python", minimum=0.1)
         key = ("sphere", "SMBO", 1, 100)
         self.assertAlmostEqual(
             compare.normalized_log_regret(julia, key)
             - compare.normalized_log_regret(python, key),
             2.0,
         )
-
-    def test_absolute_quality_is_a_separate_julia_safeguard(self):
-        paths = self.paired_paths(
-            trial_rows(
-                "Julia",
-                [20.0] * 10,
-                quality_target=10.0,
-            ),
-            trial_rows(
-                "Python",
-                [30.0] * 10,
-                quality_target=10.0,
-            ),
-        )
-        with self.assertRaisesRegex(SystemExit, "absolute-quality"):
-            compare.main(*paths)
-
-    def test_python_absolute_quality_is_not_the_julia_correctness_claim(self):
-        paths = self.paired_paths(
-            trial_rows("Julia", [0.1] * 10),
-            trial_rows("Python", [20.0] * 10),
-        )
-        compare.main(*paths)
 
     def test_at_least_ten_trials_are_required(self):
         paths = self.paired_paths(

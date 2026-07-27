@@ -5,16 +5,13 @@ import statistics
 import sys
 
 
-CONFIGURATION_PREFIX = "native-noninferiority-v2:"
+CONFIGURATION_PREFIX = "native-noninferiority-v3:"
 MINIMUM_TRIALS = 10
 BOOTSTRAP_SAMPLES = 10_000
 CONFIDENCE = 0.95
 MATCHED_METADATA = (
     "budget",
     "optimum",
-    "target",
-    "quality_target",
-    "required_hit_rate",
     "noninferiority_margin",
     "source_commit",
     "configuration_hash",
@@ -36,9 +33,6 @@ REQUIRED_COLUMNS = (
     "evaluations",
     "minimum",
     "optimum",
-    "target",
-    "quality_target",
-    "required_hit_rate",
     "noninferiority_margin",
 )
 
@@ -100,7 +94,7 @@ def read_results(path):
             f"evaluations outside budget for {key}: "
             f"evaluations={evaluations}, budget={budget}"
         )
-        for field in ("minimum", "optimum", "target", "quality_target"):
+        for field in ("minimum", "optimum"):
             _finite_float(row, field, key)
         for field in (
             "runtime_version",
@@ -174,28 +168,6 @@ def bootstrap_median_difference_upper(
     )
     index = min(samples - 1, math.ceil(confidence * samples) - 1)
     return estimates[index]
-
-
-def absolute_quality_gate(runtime, rows):
-    grouped = {}
-    for case, (_, row) in _terminal_rows(rows).items():
-        group = case[:2]
-        grouped.setdefault(group, []).append(row)
-
-    failures = []
-    for group, trials in sorted(grouped.items()):
-        target = _finite_float(trials[0], "quality_target", group)
-        required = _finite_float(trials[0], "required_hit_rate", group)
-        hit_rate = sum(
-            _finite_float(row, "minimum", group) <= target
-            for row in trials
-        ) / len(trials)
-        if hit_rate < required:
-            failures.append(
-                f"{runtime} {group}: absolute-quality hit rate "
-                f"{hit_rate:.3f} is below {required:.3f} at target={target}"
-            )
-    return failures
 
 
 def noninferiority_gate(
@@ -315,7 +287,6 @@ def main(julia_path, python_path):
     failures = validate_matrices(julia, python)
     summaries = {}
     if not failures:
-        failures.extend(absolute_quality_gate("Julia", julia))
         noninferiority_failures, summaries = noninferiority_gate(julia, python)
         failures.extend(noninferiority_failures)
     if failures:

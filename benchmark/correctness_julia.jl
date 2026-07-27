@@ -71,22 +71,16 @@ const CASES = (
         name="hartmann6",
         problem=Problem(hartmann6, Box(zeros(6), ones(6))),
         optimum=-3.322368011415515,
-        target=-2.8,
-        quality_target=-2.0,
     ),
     (
         name="rotated_rastrigin5",
         problem=Problem(rotated_rastrigin, Box(fill(-5.12, 5), fill(5.12, 5))),
         optimum=0.0,
-        target=12.0,
-        quality_target=50.0,
     ),
     (
         name="rotated_rosenbrock5",
         problem=Problem(rotated_rosenbrock, Box(fill(-3.0, 5), fill(3.0, 5))),
         optimum=0.0,
-        target=12.0,
-        quality_target=200.0,
     ),
 )
 
@@ -130,8 +124,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
         "runtime,runtime_version,source_commit,python_sambo_version,problem,algorithm,",
         "trial_id,configuration_hash,initial_design_hash,initial_design_capability,",
         "budget,evaluation,evaluations,iteration,best_value,normalized_gap,",
-        "minimum,optimum,target,quality_target,required_hit_rate,",
-        "noninferiority_margin,feasible,duplicate,retcode,success",
+        "minimum,optimum,noninferiority_margin,feasible,duplicate,retcode",
     )
     for case in CASES,
             (algorithm_name, make_algorithm, budget) in ALGORITHMS,
@@ -158,7 +151,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
             )
         end
         configuration_hash =
-            "native-noninferiority-v2:$algorithm_name:$budget"
+            "native-noninferiority-v3:$algorithm_name:$budget"
         design_hash = supports_shared_design ?
             initial_design_hash(case, trial_id) : "none"
         best = Inf
@@ -180,8 +173,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
                 "$trial_id,$configuration_hash,$design_hash,$design_capability,$budget,",
                 "$evaluation,$evaluation,$(result.trace.iterations[index]),$best,",
                 "$(normalized_gap(best, case.optimum)),$best,$(case.optimum),",
-                "$(case.target),$(case.quality_target),0.8,0.25,true,$duplicate,",
-                "$result_code,$(best <= case.target)",
+                "0.25,true,$duplicate,$result_code",
             )
         end
     end

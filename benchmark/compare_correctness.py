@@ -6,7 +6,11 @@ import sys
 
 
 EXACT_EQUIVALENCE_LOG_GAP_TOLERANCE = 0.25
+EXACT_PROFILE = "exact-v1"
+NATIVE_DEFAULT_PROFILE = "native-default-v1"
+SUPPORTED_PROFILES = (EXACT_PROFILE, NATIVE_DEFAULT_PROFILE)
 MATCHED_METADATA = (
+    "profile",
     "budget",
     "optimum",
     "target",
@@ -27,6 +31,23 @@ REQUIRED_CONFIGURATION = (
     "initial_design_hash",
     "initial_design_capability",
 )
+REQUIRED_COLUMNS = (
+    "runtime",
+    "runtime_version",
+    "source_commit",
+    "problem",
+    "algorithm",
+    "trial_id",
+    "configuration_hash",
+    "initial_design_hash",
+    "initial_design_capability",
+    "budget",
+    "evaluation",
+    "evaluations",
+    "minimum",
+    "optimum",
+    "target",
+)
 
 
 def _trial_id(row):
@@ -41,6 +62,21 @@ def _checkpoint(row):
     if value is None:
         raise SystemExit("missing evaluation checkpoint")
     return int(value)
+
+
+def _profile(row, key):
+    configuration_hash = row.get("configuration_hash", "").strip()
+    inferred = configuration_hash.split(":", 1)[0]
+    declared = row.get("profile", "").strip()
+    if declared and declared != inferred:
+        raise SystemExit(
+            f"profile/configuration_hash mismatch for {key}: "
+            f"profile={declared!r}, configuration_hash={configuration_hash!r}"
+        )
+    profile = declared or inferred
+    if profile not in SUPPORTED_PROFILES:
+        raise SystemExit(f"unsupported comparison profile for {key}: {profile!r}")
+    return profile
 
 
 def _finite_float(row, field, key):
@@ -62,7 +98,18 @@ def _integer(row, field, key):
 
 def read_results(path):
     with open(path, newline="") as source:
-        rows = list(csv.DictReader(source))
+        reader = csv.DictReader(source)
+        fieldnames = reader.fieldnames
+        if not fieldnames:
+            raise SystemExit(f"missing CSV header in {path}")
+        missing = sorted(set(REQUIRED_COLUMNS) - set(fieldnames))
+        if missing:
+            raise SystemExit(
+                f"missing required CSV columns in {path}: {missing}"
+            )
+        rows = list(reader)
+    if not rows:
+        raise SystemExit(f"no correctness result rows in {path}")
     results = {}
     for row in rows:
         try:
@@ -81,8 +128,18 @@ def read_results(path):
         _finite_float(row, "target", key)
         budget = _integer(row, "budget", key)
         evaluations = _integer(row, "evaluations", key)
-        budget >= 0 or _fail(f"invalid budget for {key}")
+        checkpoint = key[3]
+        budget > 0 or _fail(f"invalid budget for {key}")
         evaluations >= 0 or _fail(f"invalid evaluations for {key}")
+        checkpoint >= 0 or _fail(f"invalid evaluation checkpoint for {key}")
+        checkpoint == evaluations or _fail(
+            f"checkpoint/evaluations mismatch for {key}: "
+            f"checkpoint={checkpoint}, evaluations={evaluations}"
+        )
+        evaluations <= budget or _fail(
+            f"evaluations exceed budget for {key}: "
+            f"evaluations={evaluations}, budget={budget}"
+        )
         for field in REQUIRED_PROVENANCE + REQUIRED_CONFIGURATION:
             if field not in row or not row[field].strip():
                 raise SystemExit(f"missing {field} for {key}")
@@ -95,6 +152,7 @@ def read_results(path):
             "python_sambo_version",
         ):
             raise SystemExit(f"missing python_sambo_version for {key}")
+        _profile(row, key)
         results[key] = row
     return results
 
@@ -149,30 +207,32 @@ def quality_gate(runtime, rows):
 
 def exact_equivalence_gate(julia, python):
     failures = []
-    exact_cases = {
-        case
-        for case, (_, row) in _terminal_rows(julia).items()
-        if row.get("configuration_hash", "").startswith(
-            ("exact-", "fixture-", "replay-"),
-        )
-    }
     for key in sorted(set(julia) & set(python)):
-        if key[:3] not in exact_cases:
+        if _profile(julia[key], key) != EXACT_PROFILE:
             continue
-        difference = abs(
-            _normalized_log_gap(julia[key], key)
-            - _normalized_log_gap(python[key], key)
+        statistic = symmetric_equivalence_statistic(
+            julia[key],
+            python[key],
+            key,
         )
-        if difference > EXACT_EQUIVALENCE_LOG_GAP_TOLERANCE:
+        if statistic > EXACT_EQUIVALENCE_LOG_GAP_TOLERANCE:
             failures.append(
-                f"exact equivalence {key}: normalized log-gap difference "
-                f"{difference:.6g} exceeds "
+                f"exact equivalence (symmetric) {key}: absolute normalized "
+                f"log-gap difference {statistic:.6g} exceeds "
                 f"{EXACT_EQUIVALENCE_LOG_GAP_TOLERANCE}"
             )
     return failures
 
 
-def paired_log_gap_summary(julia, python):
+def symmetric_equivalence_statistic(left, right, key):
+    """Absolute log-error ratio; invariant to runtime ordering."""
+    return abs(
+        _normalized_log_gap(left, key)
+        - _normalized_log_gap(right, key)
+    )
+
+
+def paired_log_gap_summary(julia, python, *, profile=NATIVE_DEFAULT_PROFILE):
     julia_terminal = _terminal_rows(julia)
     python_terminal = _terminal_rows(python)
     differences = [
@@ -183,6 +243,7 @@ def paired_log_gap_summary(julia, python):
             python_terminal[case][1], case, clip_at_quality_target=True,
         )
         for case in sorted(julia_terminal)
+        if _profile(julia_terminal[case][1], julia_terminal[case][0]) == profile
     ]
     return {
         "count": len(differences),
@@ -241,7 +302,9 @@ def noninferiority_gate(
     python_terminal = _terminal_rows(python)
     grouped = {}
     for case in sorted(julia_terminal):
-        _, julia_row = julia_terminal[case]
+        julia_key, julia_row = julia_terminal[case]
+        if _profile(julia_row, julia_key) != NATIVE_DEFAULT_PROFILE:
+            continue
         _, python_row = python_terminal[case]
         group = case[:2]
         grouped.setdefault(group, []).append(
@@ -279,6 +342,25 @@ def _validate_metadata(julia, python):
     failures = []
     julia_terminal = _terminal_rows(julia)
     python_terminal = _terminal_rows(python)
+    for runtime, rows in (("Julia", julia), ("Python", python)):
+        for key, row in sorted(rows.items()):
+            if row.get("runtime") != runtime:
+                failures.append(
+                    f"{runtime} input {key}: runtime={row.get('runtime')!r}"
+                )
+        grouped = {}
+        for key, row in rows.items():
+            grouped.setdefault(key[:3], []).append((key, row))
+        for case, checkpoints in sorted(grouped.items()):
+            _, baseline = checkpoints[0]
+            for key, row in checkpoints[1:]:
+                for field in MATCHED_METADATA:
+                    if row.get(field) != baseline.get(field):
+                        failures.append(
+                            f"{runtime} {case}: {field} changes at checkpoint "
+                            f"{key[3]}: {baseline.get(field)!r} -> "
+                            f"{row.get(field)!r}"
+                        )
     for case in sorted(julia_terminal):
         julia_key, julia_row = julia_terminal[case]
         python_key, python_row = python_terminal[case]
@@ -290,6 +372,13 @@ def _validate_metadata(julia, python):
                     failures.append(
                         f"{case}: {field} differs: Julia={left!r}, Python={right!r}"
                     )
+        left_profile = _profile(julia_row, julia_key)
+        right_profile = _profile(python_row, python_key)
+        if left_profile != right_profile:
+            failures.append(
+                f"{case}: comparison profiles differ: "
+                f"Julia={left_profile!r}, Python={right_profile!r}"
+            )
         for runtime, key, row in (
             ("Julia", julia_key, julia_row),
             ("Python", python_key, python_row),
@@ -303,6 +392,18 @@ def _validate_metadata(julia, python):
 def main(julia_path, python_path):
     julia = read_results(julia_path)
     python = read_results(python_path)
+    julia_profiles = {_profile(row, key) for key, row in julia.items()}
+    python_profiles = {_profile(row, key) for key, row in python.items()}
+    if len(julia_profiles) != 1 or len(python_profiles) != 1:
+        raise SystemExit(
+            "each correctness matrix must contain exactly one profile: "
+            f"Julia={sorted(julia_profiles)}, Python={sorted(python_profiles)}"
+        )
+    if julia_profiles != python_profiles:
+        raise SystemExit(
+            "correctness matrix profiles differ: "
+            f"Julia={sorted(julia_profiles)}, Python={sorted(python_profiles)}"
+        )
     julia_cases = {key[:3] for key in julia}
     python_cases = {key[:3] for key in python}
     if julia_cases != python_cases:
@@ -317,19 +418,17 @@ def main(julia_path, python_path):
     julia_terminal = _terminal_rows(julia)
     exact_cases = {
         case
-        for case, (_, row) in julia_terminal.items()
-        if row.get("configuration_hash", "").startswith(
-            ("exact-", "fixture-", "replay-"),
-        )
+        for case, (key, row) in julia_terminal.items()
+        if _profile(row, key) == EXACT_PROFILE
     }
     for case in sorted(exact_cases):
-        julia_checkpoints = {key[3] for key in julia if key[:3] == case}
-        python_checkpoints = {key[3] for key in python if key[:3] == case}
-        if julia_checkpoints != python_checkpoints:
+        julia_keys = {key for key in julia if key[:3] == case}
+        python_keys = {key for key in python if key[:3] == case}
+        if julia_keys != python_keys:
             failures.append(
                 f"exact equivalence matrices differ for {case}: "
-                f"Julia={sorted(julia_checkpoints)}, "
-                f"Python={sorted(python_checkpoints)}"
+                f"Julia={sorted(key[3] for key in julia_keys)}, "
+                f"Python={sorted(key[3] for key in python_keys)}"
             )
     failures.extend(quality_gate("Julia", julia))
     failures.extend(quality_gate("Python", python))
@@ -337,15 +436,25 @@ def main(julia_path, python_path):
     failures.extend(noninferiority_gate(julia, python))
     if failures:
         raise SystemExit(
-            "native-default non-inferiority matrix failed:\n"
+            "cross-runtime correctness matrix failed:\n"
             + "\n".join(failures)
         )
 
     summary = paired_log_gap_summary(julia, python)
-    print(
-        f"validated {summary['count']} paired correctness cases; "
-        f"median Julia-Python log-gap={summary['median']:.6g}"
+    exact_count = sum(
+        _profile(row, key) == EXACT_PROFILE
+        for key, row in julia.items()
     )
+    message = (
+        f"validated {exact_count} exact-v1 symmetric-equivalence checkpoints "
+        f"and {summary['count']} native-default non-inferiority cases"
+    )
+    if summary["count"]:
+        message += (
+            "; median Julia-Python quality-floored log-gap="
+            f"{summary['median']:.6g}"
+        )
+    print(message)
 
 
 if __name__ == "__main__":

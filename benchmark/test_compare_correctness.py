@@ -19,6 +19,7 @@ FIELDS = (
     "problem",
     "algorithm",
     "trial_id",
+    "profile",
     "configuration_hash",
     "initial_design_hash",
     "initial_design_capability",
@@ -44,7 +45,8 @@ def result_row(runtime, **overrides):
         "problem": "sphere",
         "algorithm": "SMBO",
         "trial_id": 1,
-        "configuration_hash": "fixture-v1",
+        "profile": "exact-v1",
+        "configuration_hash": "exact-v1:test",
         "initial_design_hash": "fixture-design",
         "initial_design_capability": "injected-x0-y0",
         "budget": 100,
@@ -101,6 +103,19 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "duplicate"):
             compare_correctness.main(*paths)
 
+    def test_empty_result_matrices_are_rejected(self):
+        paths = self.paired_paths([], [])
+        with self.assertRaisesRegex(SystemExit, "no correctness result rows"):
+            compare_correctness.main(*paths)
+
+    def test_missing_csv_header_is_rejected(self):
+        julia_path = self.root / "julia.csv"
+        python_path = self.root / "python.csv"
+        julia_path.write_text("")
+        python_path.write_text("")
+        with self.assertRaisesRegex(SystemExit, "missing CSV header"):
+            compare_correctness.main(julia_path, python_path)
+
     def test_trace_checkpoints_are_compared(self):
         paths = self.paired_paths(
             [
@@ -110,6 +125,14 @@ class ComparatorTests(unittest.TestCase):
             [result_row("Python", evaluation=2, evaluations=2)],
         )
         with self.assertRaisesRegex(SystemExit, "matrices differ"):
+            compare_correctness.main(*paths)
+
+    def test_checkpoint_must_equal_recorded_evaluations(self):
+        paths = self.paired_paths(
+            [result_row("Julia", evaluation=50, evaluations=49)],
+            [result_row("Python")],
+        )
+        with self.assertRaisesRegex(SystemExit, "checkpoint/evaluations mismatch"):
             compare_correctness.main(*paths)
 
     def test_quality_is_checked_at_the_terminal_checkpoint(self):
@@ -161,8 +184,8 @@ class ComparatorTests(unittest.TestCase):
         for field in fields:
             with self.subTest(field=field):
                 paths = self.paired_paths(
-                    [result_row("Julia", evaluations=1)],
-                    [result_row("Python", evaluations=1, **{field: 2})],
+                    [result_row("Julia")],
+                    [result_row("Python", **{field: 2})],
                 )
                 with self.assertRaisesRegex(SystemExit, field):
                     compare_correctness.main(*paths)
@@ -224,6 +247,81 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "exact equivalence"):
             compare_correctness.main(*paths)
 
+    def test_exact_equivalence_statistic_is_symmetric(self):
+        julia = result_row("Julia", minimum=0.1)
+        python = result_row("Python", minimum=10.0)
+        key = ("sphere", "SMBO", 1, 100)
+        forward = compare_correctness.symmetric_equivalence_statistic(
+            julia,
+            python,
+            key,
+        )
+        reverse = compare_correctness.symmetric_equivalence_statistic(
+            python,
+            julia,
+            key,
+        )
+        self.assertEqual(forward, reverse)
+
+    def test_profiles_are_routed_to_distinct_gates(self):
+        exact_paths = self.paired_paths(
+            [result_row("Julia", minimum=10.0)],
+            [result_row("Python", minimum=0.1)],
+        )
+        exact_julia = compare_correctness.read_results(exact_paths[0])
+        exact_python = compare_correctness.read_results(exact_paths[1])
+        self.assertTrue(
+            compare_correctness.exact_equivalence_gate(
+                exact_julia,
+                exact_python,
+            )
+        )
+        self.assertFalse(
+            compare_correctness.noninferiority_gate(
+                exact_julia,
+                exact_python,
+                samples=20,
+            )
+        )
+
+        native_rows = {
+            "profile": "native-default-v1",
+            "configuration_hash": "native-default-v1:SMBO:100",
+        }
+        native_paths = self.paired_paths(
+            [result_row("Julia", minimum=10.0, **native_rows)],
+            [result_row("Python", minimum=0.1, **native_rows)],
+        )
+        native_julia = compare_correctness.read_results(native_paths[0])
+        native_python = compare_correctness.read_results(native_paths[1])
+        self.assertFalse(
+            compare_correctness.exact_equivalence_gate(
+                native_julia,
+                native_python,
+            )
+        )
+        self.assertTrue(
+            compare_correctness.noninferiority_gate(
+                native_julia,
+                native_python,
+                samples=20,
+            )
+        )
+
+    def test_profile_must_match_configuration_hash(self):
+        paths = self.paired_paths(
+            [
+                result_row(
+                    "Julia",
+                    profile="exact-v1",
+                    configuration_hash="native-default-v1:SMBO:100",
+                )
+            ],
+            [result_row("Python")],
+        )
+        with self.assertRaisesRegex(SystemExit, "profile/configuration_hash"):
+            compare_correctness.main(*paths)
+
     def test_paired_bootstrap_interval_and_noninferiority(self):
         lower, upper = compare_correctness.paired_bootstrap_interval(
             [0.1] * 20,
@@ -234,8 +332,24 @@ class ComparatorTests(unittest.TestCase):
         self.assertAlmostEqual(upper, 0.1)
 
         paths = self.paired_paths(
-            [result_row("Julia", minimum=10.0, target=20.0)],
-            [result_row("Python", minimum=0.1, target=20.0)],
+            [
+                result_row(
+                    "Julia",
+                    profile="native-default-v1",
+                    configuration_hash="native-default-v1:SMBO:100",
+                    minimum=10.0,
+                    target=20.0,
+                )
+            ],
+            [
+                result_row(
+                    "Python",
+                    profile="native-default-v1",
+                    configuration_hash="native-default-v1:SMBO:100",
+                    minimum=0.1,
+                    target=20.0,
+                )
+            ],
         )
         julia = compare_correctness.read_results(paths[0])
         python = compare_correctness.read_results(paths[1])

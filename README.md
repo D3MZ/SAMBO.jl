@@ -194,10 +194,17 @@ Replace the saved files in `benchmark/results/` and run
 
 ### Cross-runtime solution-quality checks
 
-This checks whether the Julia and Python implementations reach comparable solutions on difficult problems.
+Two profiles separate native solver quality from exact shared-input replay:
 
-Identical objective formulas and bounds were tested over five independent trial
-identifiers; the runtimes use their native RNG implementations.
+- `native-default-v1` checks one-sided Julia non-inferiority while each runtime
+  uses its native solver implementation and random-number generator.
+- `exact-v1` evaluates serialized shared initial populations, replacement
+  samples, candidate pools, acquisition coefficients, randomized SHGO samples,
+  and evaluation checkpoints. It uses a symmetric, unclipped equivalence gate.
+
+The native profile uses identical objective formulas and bounds. SCE-UA and SMBO
+use five trial identifiers; deterministic Python SHGO is treated as one
+realization rather than five nominally seeded copies.
 SCE-UA and SHGO received 1,000 evaluations and SMBO received 300. The rotated, shifted
 five-dimensional cases test multimodality, conditioning, and nonseparability
 robustness rather than rotation invariance of an axis-aligned box. Targets were
@@ -208,7 +215,7 @@ practical quality thresholds of −2.0, 50, and 200 for Hartmann-6, Rastrigin-5,
 and Rosenbrock-5, then applies a 0.25-decade paired non-inferiority margin above
 those thresholds.
 
-<sub>Each cell: median final objective; target hits across five trials. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
+<sub>Each cell: median final objective; target hits across the profile's trials. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
 
 <!-- correctness-table:start -->
 | Algorithm | Problem (known optimum; target) | Julia | Python |
@@ -227,10 +234,16 @@ those thresholds.
 Reproduce the matrix:
 
 ```sh
-julia --project=. benchmark/correctness_julia.jl > julia-correctness.csv
-python3 benchmark/correctness_python.py > python-correctness.csv
-python3 benchmark/compare_correctness.py julia-correctness.csv python-correctness.csv
-python3 benchmark/update_correctness_readme.py README.md julia-correctness.csv python-correctness.csv
+quality_dir=$(mktemp -d)
+julia --project=. benchmark/correctness_julia.jl --profile native-default-v1 > "$quality_dir/native-julia.csv"
+python3 benchmark/correctness_python.py --profile native-default-v1 > "$quality_dir/native-python.csv"
+python3 benchmark/compare_correctness.py "$quality_dir/native-julia.csv" "$quality_dir/native-python.csv"
+
+julia --project=. benchmark/correctness_julia.jl --profile exact-v1 > "$quality_dir/exact-julia.csv"
+python3 benchmark/correctness_python.py --profile exact-v1 > "$quality_dir/exact-python.csv"
+python3 benchmark/compare_correctness.py "$quality_dir/exact-julia.csv" "$quality_dir/exact-python.csv"
+
+python3 benchmark/update_correctness_readme.py README.md "$quality_dir/native-julia.csv" "$quality_dir/native-python.csv"
 ```
 
 ## Lines of Code Over Time

@@ -1,5 +1,6 @@
 using Random
 using SAMBO
+using SHA
 
 const DEFAULT_TRIALS = 1:5
 const SOURCE_COMMIT = if haskey(ENV, "GITHUB_SHA")
@@ -96,6 +97,52 @@ const ALGORITHMS = (
     ("SHGO", () -> SHGO(sampling_points=128), 1000),
 )
 
+const FIXTURE_PATH = joinpath(@__DIR__, "exact_v1_fixture.csv")
+
+function exact_fixture()
+    lines = readlines(FIXTURE_PATH)
+    streams = Dict{Tuple{String,String,Int},Vector{NamedTuple}}()
+    for line in @view lines[2:end]
+        fields = split(line, ','; keepempty=true)
+        problem, algorithm = fields[1], fields[2]
+        trial_id = parse(Int, fields[3])
+        dimensions = problem == "hartmann6" ? 6 : 5
+        item = (
+            evaluation=parse(Int, fields[4]),
+            phase=fields[5],
+            pool_id=parse(Int, fields[6]),
+            acquisition_coefficient=isempty(fields[7]) ?
+                nothing : parse(Float64, fields[7]),
+            checkpoint=parse(Int, fields[8]),
+            latent=parse.(Float64, fields[9:8+dimensions]),
+        )
+        push!(get!(streams, (problem, algorithm, trial_id), NamedTuple[]), item)
+    end
+    budgets = Dict(name => budget for (name, _, budget) in ALGORITHMS)
+    for ((problem, algorithm, _), stream) in streams
+        budget = budgets[algorithm]
+        getproperty.(stream, :evaluation) == collect(1:budget) ||
+            error("exact-v1 evaluations must be contiguous")
+        getproperty.(stream, :checkpoint) == collect(1:budget) ||
+            error("exact-v1 checkpoints must be contiguous")
+        phases = Set(getproperty.(stream, :phase))
+        required = Dict(
+            "SCE-UA" => Set(("initial_population", "replacement_sample")),
+            "SMBO" => Set(("initial_population", "candidate_pool")),
+            "SHGO" => Set(("randomized_shared_sampling",)),
+        )[algorithm]
+        phases == required ||
+            error("invalid exact-v1 phases for $problem/$algorithm")
+        algorithm != "SMBO" || all(
+            item.acquisition_coefficient !== nothing
+            for item in stream if item.phase == "candidate_pool"
+        ) || error("exact-v1 SMBO pools require acquisition coefficients")
+    end
+    return streams
+end
+
+fixture_hash() = "sha256:" * bytes2hex(sha256(read(FIXTURE_PATH)))
+
 function shared_initial_point(case, trial_id)
     dimensions = SAMBO.dimension(case.problem.space)
     latent = [
@@ -118,7 +165,11 @@ benchmark_trials(algorithm_name, trials) =
 normalized_gap(value, optimum) =
     max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
 
-function main(io=stdout; trials=DEFAULT_TRIALS)
+function main(io=stdout; trials=DEFAULT_TRIALS, profile="native-default-v1")
+    profile in ("native-default-v1", "exact-v1") ||
+        throw(ArgumentError("unsupported correctness profile: $profile"))
+    fixture = profile == "exact-v1" ? exact_fixture() : nothing
+    exact_design_hash = profile == "exact-v1" ? fixture_hash() : nothing
     abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6 ||
         error("Hartmann-6 reference minimum is inconsistent")
     rotated_rastrigin(SHIFT) == 0 ||
@@ -128,16 +179,48 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
     println(
         io,
         "runtime,runtime_version,source_commit,python_sambo_version,problem,algorithm,",
-        "trial_id,configuration_hash,initial_design_hash,initial_design_capability,",
+        "trial_id,profile,configuration_hash,initial_design_hash,initial_design_capability,",
         "budget,evaluation,evaluations,iteration,best_value,normalized_gap,",
         "minimum,optimum,target,quality_target,required_hit_rate,",
         "noninferiority_margin,feasible,duplicate,retcode,success",
     )
     for case in CASES,
             (algorithm_name, make_algorithm, budget) in ALGORITHMS,
-            trial_id in benchmark_trials(algorithm_name, trials)
+            trial_id in (
+                profile == "exact-v1" ?
+                Tuple(trials) :
+                benchmark_trials(algorithm_name, trials)
+            )
         design_capability = shared_design_capability(algorithm_name)
         supports_shared_design = design_capability == "injected-x0-y0"
+        if profile == "exact-v1"
+            stream = fixture[(case.name, algorithm_name, trial_id)]
+            length(stream) == budget ||
+                error("exact-v1 fixture does not match budget")
+            best = Inf
+            seen = Set{Tuple}()
+            design_hash = exact_design_hash
+            for item in stream
+                point = decode(case.problem.space, item.latent)
+                value = case.problem.objective(point)
+                best = min(best, value)
+                key = Tuple(item.latent)
+                duplicate = key in seen
+                push!(seen, key)
+                println(
+                    io,
+                    "Julia,$VERSION,$SOURCE_COMMIT,n/a,$(case.name),$algorithm_name,",
+                    "$trial_id,$profile,exact-v1:$algorithm_name:$budget,",
+                    "$design_hash,serialized-exact-replay,$budget,",
+                    "$(item.evaluation),$(item.evaluation),$(item.checkpoint),$best,",
+                    "$(normalized_gap(best, case.optimum)),$best,$(case.optimum),",
+                    "$(case.target),$(case.quality_target),0.8,0.25,true,$duplicate,",
+                    "$(item.evaluation == budget ? :exact_replay_completed : :running),",
+                    "$(best <= case.target)",
+                )
+            end
+            continue
+        end
         result = if supports_shared_design
             initial_point = shared_initial_point(case, trial_id)
             initial_value = case.problem.objective(initial_point)
@@ -157,7 +240,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
                 rng=Xoshiro(trial_id),
             )
         end
-        configuration_hash = "native-default-v1:$algorithm_name:$budget"
+        configuration_hash = "$profile:$algorithm_name:$budget"
         design_hash = supports_shared_design ?
             initial_design_hash(case, trial_id) : "none"
         best = Inf
@@ -176,7 +259,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
             println(
                 io,
                 "Julia,$VERSION,$SOURCE_COMMIT,n/a,$(case.name),$algorithm_name,",
-                "$trial_id,$configuration_hash,$design_hash,$design_capability,$budget,",
+                "$trial_id,$profile,$configuration_hash,$design_hash,$design_capability,$budget,",
                 "$evaluation,$evaluation,$(result.trace.iterations[index]),$best,",
                 "$(normalized_gap(best, case.optimum)),$best,$(case.optimum),",
                 "$(case.target),$(case.quality_target),0.8,0.25,true,$duplicate,",
@@ -186,4 +269,11 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
     end
 end
 
-abspath(PROGRAM_FILE) == abspath(@__FILE__) && main()
+function requested_profile(args)
+    index = findfirst(==("--profile"), args)
+    !isnothing(index) && index < length(args) && return args[index + 1]
+    return get(ENV, "CORRECTNESS_PROFILE", "native-default-v1")
+end
+
+abspath(PROGRAM_FILE) == abspath(@__FILE__) &&
+    main(; profile=requested_profile(ARGS))

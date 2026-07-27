@@ -1,4 +1,6 @@
 import csv
+import argparse
+import hashlib
 import os
 import platform
 import subprocess
@@ -146,11 +148,77 @@ def benchmark_trials(algorithm, trials):
     return trials[:1] if algorithm == "SHGO" else trials
 
 
+FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "exact_v1_fixture.csv")
+
+
+def exact_fixture():
+    streams = {}
+    with open(FIXTURE_PATH, newline="", encoding="utf-8") as source:
+        for row in csv.DictReader(source):
+            key = (row["problem"], row["algorithm"], int(row["trial_id"]))
+            dimensions = 6 if row["problem"] == "hartmann6" else 5
+            streams.setdefault(key, []).append(
+                {
+                    "evaluation": int(row["evaluation"]),
+                    "phase": row["phase"],
+                    "pool_id": int(row["pool_id"]),
+                    "acquisition_coefficient": (
+                        None
+                        if not row["acquisition_coefficient"]
+                        else float(row["acquisition_coefficient"])
+                    ),
+                    "checkpoint": int(row["checkpoint"]),
+                    "latent": np.array(
+                        [float(row[f"u{axis}"]) for axis in range(1, dimensions + 1)]
+                    ),
+                }
+            )
+    for (problem, algorithm, _), stream in streams.items():
+        budget = dict((name, value) for name, _, value in ALGORITHMS)[algorithm]
+        if [item["evaluation"] for item in stream] != list(range(1, budget + 1)):
+            raise RuntimeError("exact-v1 evaluations must be contiguous")
+        if [item["checkpoint"] for item in stream] != list(range(1, budget + 1)):
+            raise RuntimeError("exact-v1 checkpoints must be contiguous")
+        phases = {item["phase"] for item in stream}
+        required = {
+            "SCE-UA": {"initial_population", "replacement_sample"},
+            "SMBO": {"initial_population", "candidate_pool"},
+            "SHGO": {"randomized_shared_sampling"},
+        }[algorithm]
+        if phases != required:
+            raise RuntimeError(f"invalid exact-v1 phases for {problem}/{algorithm}")
+        if algorithm == "SMBO" and not all(
+            item["acquisition_coefficient"] is not None
+            for item in stream
+            if item["phase"] == "candidate_pool"
+        ):
+            raise RuntimeError("exact-v1 SMBO pools require acquisition coefficients")
+    return streams
+
+
+def fixture_hash():
+    digest = hashlib.sha256()
+    with open(FIXTURE_PATH, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def decode_latent(bounds, latent):
+    lower = np.array([bound[0] for bound in bounds], dtype=float)
+    upper = np.array([bound[1] for bound in bounds], dtype=float)
+    return lower + latent * (upper - lower)
+
+
 def normalized_gap(value, optimum):
     return max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
 
 
-def main(trials=DEFAULT_TRIALS):
+def main(trials=DEFAULT_TRIALS, profile="native-default-v1"):
+    if profile not in ("native-default-v1", "exact-v1"):
+        raise ValueError(f"unsupported correctness profile: {profile}")
+    fixture = exact_fixture() if profile == "exact-v1" else None
+    exact_design_hash = fixture_hash() if profile == "exact-v1" else None
     assert abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6
     assert rotated_rastrigin(SHIFT) == 0
     assert rotated_rosenbrock(SHIFT) == 0
@@ -164,6 +232,7 @@ def main(trials=DEFAULT_TRIALS):
             "problem",
             "algorithm",
             "trial_id",
+            "profile",
             "configuration_hash",
             "initial_design_hash",
             "initial_design_capability",
@@ -187,7 +256,12 @@ def main(trials=DEFAULT_TRIALS):
     )
     for problem, objective, bounds, optimum, target, quality_target in CASES:
         for algorithm, method, budget in ALGORITHMS:
-            for trial_id in benchmark_trials(algorithm, trials):
+            selected_trials = (
+                tuple(trials)
+                if profile == "exact-v1"
+                else benchmark_trials(algorithm, trials)
+            )
+            for trial_id in selected_trials:
                 initial_point = shared_initial_point(
                     problem,
                     bounds,
@@ -210,23 +284,37 @@ def main(trials=DEFAULT_TRIALS):
                     if supports_shared_design
                     else {}
                 )
-                result = minimize(
-                    counted_objective,
-                    bounds=bounds,
-                    method=method,
-                    max_iter=budget,
-                    rng=trial_id,
-                    **initial_kwargs,
-                )
+                if profile == "exact-v1":
+                    stream = fixture[(problem, algorithm, trial_id)]
+                    if len(stream) != budget:
+                        raise RuntimeError("exact-v1 fixture does not match budget")
+                    for item in stream:
+                        counted_objective(decode_latent(bounds, item["latent"]))
+                    result = type(
+                        "ExactReplayResult",
+                        (),
+                        {"message": "exact_replay_completed"},
+                    )()
+                    design_capability = "serialized-exact-replay"
+                    supports_shared_design = True
+                else:
+                    result = minimize(
+                        counted_objective,
+                        bounds=bounds,
+                        method=method,
+                        max_iter=budget,
+                        rng=trial_id,
+                        **initial_kwargs,
+                    )
                 if len(evaluation_trace) > budget:
                     raise RuntimeError(
                         "Python objective calls exceeded the requested budget"
                     )
-                configuration_hash = (
-                    f"native-default-v1:{algorithm}:{budget}"
-                )
+                configuration_hash = f"{profile}:{algorithm}:{budget}"
                 design_hash = (
-                    initial_design_hash(problem, trial_id)
+                    exact_design_hash
+                    if profile == "exact-v1"
+                    else initial_design_hash(problem, trial_id)
                     if supports_shared_design
                     else "none"
                 )
@@ -254,6 +342,7 @@ def main(trials=DEFAULT_TRIALS):
                             problem,
                             algorithm,
                             trial_id,
+                            profile,
                             configuration_hash,
                             design_hash,
                             design_capability,
@@ -278,4 +367,11 @@ def main(trials=DEFAULT_TRIALS):
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--profile",
+        choices=("native-default-v1", "exact-v1"),
+        default=os.environ.get("CORRECTNESS_PROFILE", "native-default-v1"),
+    )
+    args = parser.parse_args()
+    main(profile=args.profile)

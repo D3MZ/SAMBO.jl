@@ -175,9 +175,9 @@ This compares warm-run execution time for equivalent seeded Rosenbrock workloads
 
 | Algorithm | Julia | Python | Improvement |
 |---|---:|---:|---:|
-| SCE-UA | 0.0198 ms | 1.426 ms | 72.1× faster |
-| SMBO | 15.191 ms | 631.436 ms | 41.6× faster |
-| SHGO | 0.0732 ms | 1.557 ms | 21.3× faster |
+| SCE-UA | 0.0240 ms | 1.420 ms | 59.1× faster |
+| SMBO | 13.831 ms | 622.658 ms | 45.0× faster |
+| SHGO | 0.0399 ms | 1.666 ms | 41.7× faster |
 
 Run the benchmark:
 

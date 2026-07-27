@@ -44,7 +44,7 @@ jobs:
       - name: Generate instrumented-line coverage
         if: matrix.version == '1.12'
         run: julia scripts/instrumented_lcov.jl src ext > lcov.info
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v7
         if: matrix.version == '1.12'
         with:
           files: lcov.info

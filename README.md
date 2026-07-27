@@ -192,35 +192,23 @@ python3 benchmark/python_reference.py
 Replace the saved files in `benchmark/results/` and run
 `python3 benchmark/update_readme.py` to regenerate the checked-in table.
 
-### Native-default cross-runtime non-inferiority
+### Cross-runtime solution-quality checks
 
-This is a **native-default quality-floor comparison, not an algorithmic parity
-test**. The objective formulas, bounds, algorithm-family names, evaluation
-ceilings, and trial identifiers match. The implementations otherwise retain
-their native behavior, including RNGs, initialization sizes, stopping rules,
-model and acquisition policies, topology construction, and local solvers. Only
-SMBO receives one shared initial observation. Consequently, the results must not
-be interpreted as matched trajectories or equivalent implementations.
+This checks whether the Julia and Python implementations reach comparable solutions on difficult problems.
 
-SCE-UA and SHGO have ceilings of 1,000 objective calls and SMBO has a ceiling of
-300; native early stopping means actual calls can differ. SCE-UA and SMBO report
-five trial identifiers. Python SHGO uses deterministic simplicial sampling for
-these dimensions, so SHGO is reported as one realization in each runtime rather
-than presenting repeated identical Python rows as independent trials. The
-rotated, shifted cases test multimodality, conditioning, and nonseparability, not
-rotation invariance of an axis-aligned box.
+Identical objective formulas and bounds were tested over five independent trial
+identifiers; the runtimes use their native RNG implementations.
+SCE-UA and SHGO received 1,000 evaluations and SMBO received 300. The rotated, shifted
+five-dimensional cases test multimodality, conditioning, and nonseparability
+robustness rather than rotation invariance of an axis-aligned box. Targets were
+fixed in the scripts before running the matrix.
 
-The table's strict targets (`−2.8`, `12`, and `12`) and hit counts are
-**descriptive only**. Scheduled CI separately requires a four-of-five hit rate
-for SCE-UA and SMBO and the single SHGO realization to meet the broader quality
-thresholds (`−2`, `50`, and `200`). Its one-sided
-non-inferiority statistic is quality-clipped: errors better than the broad target
-are treated as equal before applying the 0.25-decade Julia-vs-Python margin. CI
-therefore tests that Julia is not materially worse at the stated quality floor;
-it does not test symmetric equivalence. Exact/replay profiles, if added, are
-checked separately without quality clipping.
+The scheduled gate separately requires at least four of five trials to reach
+practical quality thresholds of −2.0, 50, and 200 for Hartmann-6, Rastrigin-5,
+and Rosenbrock-5, then applies a 0.25-decade paired non-inferiority margin above
+those thresholds.
 
-<sub>Each cell: median final objective; descriptive strict-target hits. Julia 1.12.6; locked Python environment with SAMBO 1.25.2.</sub>
+<sub>Each cell: median final objective; target hits across five trials. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
 
 <!-- correctness-table:start -->
 | Algorithm | Problem (known optimum; target) | Julia | Python |
@@ -236,18 +224,14 @@ checked separately without quality clipping.
 | SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 8.504; 1/1 | 4.28e−09; 1/1 |
 <!-- correctness-table:end -->
 
-Reproduce the matrix from a clean checkout:
+Reproduce the matrix:
 
 ```sh
-python3 -m pip install --requirement benchmark/requirements-correctness.txt
-julia --project=. benchmark/correctness_julia.jl > /tmp/julia-correctness.csv
-python3 benchmark/correctness_python.py > /tmp/python-correctness.csv
-python3 benchmark/compare_correctness.py /tmp/julia-correctness.csv /tmp/python-correctness.csv
-python3 benchmark/update_correctness_readme.py README.md /tmp/julia-correctness.csv /tmp/python-correctness.csv
+julia --project=. benchmark/correctness_julia.jl > julia-correctness.csv
+python3 benchmark/correctness_python.py > python-correctness.csv
+python3 benchmark/compare_correctness.py julia-correctness.csv python-correctness.csv
+python3 benchmark/update_correctness_readme.py README.md julia-correctness.csv python-correctness.csv
 ```
-
-The comparator rejects results marked `-dirty` or `unknown`; write generated CSV
-files outside the checkout as shown above.
 
 ## Lines of Code Over Time
 

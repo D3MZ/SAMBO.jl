@@ -165,10 +165,10 @@ mutable struct SMBOWorkspace{TX,TY,P}
     available::BitVector
 end
 
-mutable struct SMBOState{C,A,T,W}
+mutable struct SMBOState{C,A,T,W,M,O}
     core::C
     algorithm::A
-    model::Any
+    model::M
     pending::Dict{UInt64,PendingBatch{T}}
     next_identifier::UInt64
     observations_at_fit::Int
@@ -176,7 +176,7 @@ mutable struct SMBOState{C,A,T,W}
     initial_design::Matrix{T}
     initial_design_cursor::Int
     workspace::W
-    occupied::Set{Tuple}
+    occupied::O
 end
 
 function _unique_design_columns(design, equality)
@@ -241,15 +241,23 @@ function init(problem::Problem, algorithm::SMBO; initial_points=nothing, initial
         Int[],
         BitVector(),
     )
-    occupied = Set{Tuple}()
+    occupied = Set{Vector{T}}()
     if algorithm.repeat_policy isa AvoidRepeatedEvaluations &&
             !isnothing(space_cardinality(problem.space)) &&
             algorithm.candidate_equality isa ExactCandidateEquality
         for column in 1:core.trace.count
-            push!(occupied, Tuple(@view core.trace.latent_points[:, column]))
+            push!(occupied, collect(@view core.trace.latent_points[:, column]))
         end
     end
-    return SMBOState(
+    Model = Union{Nothing,fittedmodeltype(algorithm.surrogate, T, TY)}
+    return SMBOState{
+        typeof(core),
+        typeof(algorithm),
+        T,
+        typeof(workspace),
+        Model,
+        typeof(occupied),
+    }(
         core,
         algorithm,
         nothing,
@@ -506,14 +514,14 @@ function _penalized_score(
 end
 
 function _occupied_count_scan(state::SMBOState)
-    occupied = Set{Tuple}()
+    occupied = empty(state.occupied)
     trace = state.core.trace
     for column in 1:trace.count
-        push!(occupied, Tuple(@view trace.latent_points[:, column]))
+        push!(occupied, collect(@view trace.latent_points[:, column]))
     end
     for pending in values(state.pending), column in axes(pending.points, 2)
         pending.unresolved[column] &&
-            push!(occupied, Tuple(@view pending.points[:, column]))
+            push!(occupied, collect(@view pending.points[:, column]))
     end
     return length(occupied)
 end
@@ -526,14 +534,14 @@ _occupied_count(state::SMBOState) =
 function _occupy!(state::SMBOState, points)
     _tracks_occupancy(state) || return state
     for column in axes(points, 2)
-        push!(state.occupied, Tuple(@view points[:, column]))
+        push!(state.occupied, collect(@view points[:, column]))
     end
     return state
 end
 function _release_occupied!(state::SMBOState, pending, indices)
     _tracks_occupancy(state) || return state
     for index in indices
-        delete!(state.occupied, Tuple(@view pending.points[:, index]))
+        delete!(state.occupied, collect(@view pending.points[:, index]))
     end
     return state
 end
@@ -995,7 +1003,31 @@ function restore(problem::Problem, saved::SMBOCheckpoint)
             copy(batch.unresolved),
         )
     end
-    return SMBOState(
+    workspace = deepcopy(saved.workspace)
+    occupied = Set{Vector{TX}}()
+    for column in 1:core.trace.count
+        push!(occupied, collect(@view core.trace.latent_points[:, column]))
+    end
+    for batch in values(pending), column in axes(batch.points, 2)
+        batch.unresolved[column] &&
+            push!(occupied, collect(@view batch.points[:, column]))
+    end
+    Model = Union{
+        Nothing,
+        fittedmodeltype(
+            saved.algorithm.surrogate,
+            TX,
+            eltype(core.trace.objective_values),
+        ),
+    }
+    return SMBOState{
+        typeof(core),
+        typeof(saved.algorithm),
+        TX,
+        typeof(workspace),
+        Model,
+        typeof(occupied),
+    }(
         core,
         saved.algorithm,
         deepcopy(saved.model),
@@ -1005,17 +1037,7 @@ function restore(problem::Problem, saved::SMBOCheckpoint)
         deepcopy(saved.failures),
         Matrix{TX}(saved.initial_design),
         saved.initial_design_cursor,
-        deepcopy(saved.workspace),
-        begin
-            occupied = Set{Tuple}()
-            for column in 1:core.trace.count
-                push!(occupied, Tuple(@view core.trace.latent_points[:, column]))
-            end
-            for batch in values(pending), column in axes(batch.points, 2)
-                batch.unresolved[column] &&
-                    push!(occupied, Tuple(@view batch.points[:, column]))
-            end
-            occupied
-        end,
+        workspace,
+        occupied,
     )
 end

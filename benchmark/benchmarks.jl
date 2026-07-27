@@ -13,7 +13,8 @@ function benchmark_suite()
     problem = Problem(rosenbrock, space)
     configurations = (
         ("SCE-UA", SCEUA()),
-        ("SMBO-GP", SMBO(candidate_pool=1024)),
+        ("SMBO", SMBO(candidate_pool=1024)),
+        ("SHGO", SHGO()),
     )
     suite = BenchmarkGroup()
     for (name, algorithm) in configurations

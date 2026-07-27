@@ -5,7 +5,7 @@ using Random
 problem = Problem(x -> sum(abs2, x), Box(fill(-1.0, 2), fill(1.0, 2)))
 candidates = rand(MersenneTwister(430), 2, 4)
 values = zeros(4)
-JET.@test_opt SAMBO.evaluate!(
+JET.@test_opt target_modules=(SAMBO,) SAMBO.evaluate!(
     values,
     Serial(),
     problem,
@@ -30,7 +30,7 @@ SAMBO.predictmeanvariance!(
     candidates,
     prediction,
 )
-JET.@test_opt SAMBO.predictmeanvariance!(
+JET.@test_opt target_modules=(SAMBO,) SAMBO.predictmeanvariance!(
     means,
     variances,
     model,
@@ -45,7 +45,7 @@ sceua = init(
     rng=MersenneTwister(432),
 )
 step!(sceua)
-JET.@test_opt step!(sceua)
+JET.@test_opt target_modules=(SAMBO,) step!(sceua)
 
 smbo = init(
     Problem(Box(fill(-1.0, 2), fill(1.0, 2))),
@@ -53,4 +53,4 @@ smbo = init(
     maximum_evaluations=20,
     rng=MersenneTwister(433),
 )
-JET.@test_opt ask!(smbo, 2)
+JET.@test_opt target_modules=(SAMBO,) ask!(smbo, 2)

@@ -54,12 +54,13 @@ function sample!(rng, destination::AbstractMatrix{T}, ::LatinHypercubeDesign, sp
     d, n = size(destination)
     d == dimension(space) || throw(DimensionMismatch("sample matrix and space differ in dimension"))
     n == 0 && return destination
-    destination .= QuasiMonteCarlo.sample(
+    sequence = QuasiMonteCarlo.sample(
         n,
         d,
         QuasiMonteCarlo.LatinHypercubeSample(rng=rng),
         T,
-    )
+    )::Matrix{T}
+    copyto!(destination, sequence)
     return _canonicalize_samples!(destination, space)
 end
 
@@ -75,7 +76,7 @@ function sample!(rng, destination::AbstractMatrix{T}, design::HaltonDesign, spac
             R=QuasiMonteCarlo.Shift(rng=rng),
         ),
         T,
-    )
+    )::Matrix{T}
     destination .= @view sequence[:, design.skip+1:end]
     return _canonicalize_samples!(destination, space)
 end
@@ -92,7 +93,7 @@ function sample!(rng, destination::AbstractMatrix{T}, design::SobolDesign, space
             R=QuasiMonteCarlo.Shift(rng=rng),
         ),
         T,
-    )
+    )::Matrix{T}
     destination .= @view sequence[:, design.skip+1:end]
     return _canonicalize_samples!(destination, space)
 end

@@ -11,8 +11,8 @@ function SAMBO.generate_candidates!(
     state::SAMBO.SMBOState,
     ::ExhaustingCoverageCandidates,
 )
-    push!(state.occupied, (0.0,))
-    push!(state.occupied, (1.0,))
+    push!(state.occupied, [0.0])
+    push!(state.occupied, [1.0])
     return 0
 end
 
@@ -42,7 +42,7 @@ end
         maximum_evaluations=3,
         rng=MersenneTwister(1),
     )
-    @test seeded_discrete.occupied == Set([(0.0,)])
+    @test seeded_discrete.occupied == Set([[0.0]])
 
     SAMBO._ensure_candidate_capacity!(
         seeded_discrete.workspace,

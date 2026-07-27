@@ -65,6 +65,27 @@ struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,LM,L}
     noise::T
 end
 
+resolved_length_scale_type(::AutomaticLengthScale, ::Type{T}) where {T} = T
+resolved_length_scale_type(::IsotropicLengthScale, ::Type{T}) where {T} = T
+resolved_length_scale_type(::ARDLengthScale, ::Type{T}) where {T} = Vector{T}
+fittedmodeltype(specification, ::Type{TX}, ::Type{TY}) where {TX,TY} = Any
+function fittedmodeltype(
+    specification::GaussianProcessSurrogate{L,N},
+    ::Type{TX},
+    ::Type{TY},
+) where {L,N,TX,TY}
+    T = promote_type(TX, TY, typeof(float(specification.noise)))
+    LS = resolved_length_scale_type(specification.length_scale, T)
+    return GaussianProcessModel{
+        T,
+        Matrix{T},
+        Vector{T},
+        Cholesky{T,Matrix{T}},
+        Matrix{T},
+        LS,
+    }
+end
+
 @inline function _scaled_distance(left, right, length_scale::Real)
     inverse_scale = inv(length_scale)
     distance = zero(promote_type(

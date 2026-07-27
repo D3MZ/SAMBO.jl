@@ -5,7 +5,7 @@ import statistics
 import sys
 
 
-PARITY_LOG_GAP_TOLERANCE = 0.25
+EXACT_EQUIVALENCE_LOG_GAP_TOLERANCE = 0.25
 MATCHED_METADATA = (
     "budget",
     "optimum",
@@ -86,6 +86,11 @@ def read_results(path):
         for field in REQUIRED_PROVENANCE + REQUIRED_CONFIGURATION:
             if field not in row or not row[field].strip():
                 raise SystemExit(f"missing {field} for {key}")
+        source_commit = row["source_commit"]
+        if source_commit == "unknown" or source_commit.endswith("-dirty"):
+            raise SystemExit(
+                f"non-reproducible source_commit for {key}: {source_commit}"
+            )
         if row.get("runtime") == "Python" and not row.get(
             "python_sambo_version",
         ):
@@ -98,15 +103,16 @@ def _fail(message):
     raise SystemExit(message)
 
 
-def _normalized_log_gap(row, key):
+def _normalized_log_gap(row, key, *, clip_at_quality_target=False):
     minimum = _finite_float(row, "minimum", key)
     optimum = _finite_float(row, "optimum", key)
     scale = max(1.0, abs(optimum))
     gap = abs(minimum - optimum) / scale
-    quality_target = row.get("quality_target")
-    if quality_target not in (None, ""):
-        quality_floor = abs(float(quality_target) - optimum) / scale
-        gap = max(gap, quality_floor)
+    if clip_at_quality_target:
+        quality_target = row.get("quality_target")
+        if quality_target not in (None, ""):
+            quality_floor = abs(float(quality_target) - optimum) / scale
+            gap = max(gap, quality_floor)
     gap = max(gap, 1e-15)
     return math.log10(gap)
 
@@ -141,7 +147,7 @@ def quality_gate(runtime, rows):
     return failures
 
 
-def statistical_parity_gate(julia, python):
+def exact_equivalence_gate(julia, python):
     failures = []
     exact_cases = {
         case
@@ -157,10 +163,11 @@ def statistical_parity_gate(julia, python):
             _normalized_log_gap(julia[key], key)
             - _normalized_log_gap(python[key], key)
         )
-        if difference > PARITY_LOG_GAP_TOLERANCE:
+        if difference > EXACT_EQUIVALENCE_LOG_GAP_TOLERANCE:
             failures.append(
-                f"parity {key}: normalized log-gap difference "
-                f"{difference:.6g} exceeds {PARITY_LOG_GAP_TOLERANCE}"
+                f"exact equivalence {key}: normalized log-gap difference "
+                f"{difference:.6g} exceeds "
+                f"{EXACT_EQUIVALENCE_LOG_GAP_TOLERANCE}"
             )
     return failures
 
@@ -169,8 +176,12 @@ def paired_log_gap_summary(julia, python):
     julia_terminal = _terminal_rows(julia)
     python_terminal = _terminal_rows(python)
     differences = [
-        _normalized_log_gap(julia_terminal[case][1], case)
-        - _normalized_log_gap(python_terminal[case][1], case)
+        _normalized_log_gap(
+            julia_terminal[case][1], case, clip_at_quality_target=True,
+        )
+        - _normalized_log_gap(
+            python_terminal[case][1], case, clip_at_quality_target=True,
+        )
         for case in sorted(julia_terminal)
     ]
     return {
@@ -234,8 +245,12 @@ def noninferiority_gate(
         _, python_row = python_terminal[case]
         group = case[:2]
         grouped.setdefault(group, []).append(
-            _normalized_log_gap(julia_row, case)
-            - _normalized_log_gap(python_row, case)
+            _normalized_log_gap(
+                julia_row, case, clip_at_quality_target=True,
+            )
+            - _normalized_log_gap(
+                python_row, case, clip_at_quality_target=True,
+            )
         )
     failures = []
     for group, differences in sorted(grouped.items()):
@@ -312,16 +327,19 @@ def main(julia_path, python_path):
         python_checkpoints = {key[3] for key in python if key[:3] == case}
         if julia_checkpoints != python_checkpoints:
             failures.append(
-                f"exact parity matrices differ for {case}: "
+                f"exact equivalence matrices differ for {case}: "
                 f"Julia={sorted(julia_checkpoints)}, "
                 f"Python={sorted(python_checkpoints)}"
             )
     failures.extend(quality_gate("Julia", julia))
     failures.extend(quality_gate("Python", python))
-    failures.extend(statistical_parity_gate(julia, python))
+    failures.extend(exact_equivalence_gate(julia, python))
     failures.extend(noninferiority_gate(julia, python))
     if failures:
-        raise SystemExit("correctness/parity matrix failed:\n" + "\n".join(failures))
+        raise SystemExit(
+            "native-default non-inferiority matrix failed:\n"
+            + "\n".join(failures)
+        )
 
     summary = paired_log_gap_summary(julia, python)
     print(

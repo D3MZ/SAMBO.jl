@@ -24,5 +24,5 @@ using Tables
     include("corrected_native_contracts.jl")
     include("corrected_interop_contracts.jl")
     include("corrected_performance_review.jl")
-    include("corrected_parity_review.jl")
+    include("native_default_review.jl")
 end

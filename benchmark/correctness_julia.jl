@@ -112,6 +112,9 @@ shared_design_capability(algorithm_name) =
     algorithm_name == "SMBO" ?
     "injected-x0-y0" : "not-supported-cross-runtime"
 
+benchmark_trials(algorithm_name, trials) =
+    algorithm_name == "SHGO" ? (first(trials),) : trials
+
 normalized_gap(value, optimum) =
     max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
 
@@ -132,7 +135,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
     )
     for case in CASES,
             (algorithm_name, make_algorithm, budget) in ALGORITHMS,
-            trial_id in trials
+            trial_id in benchmark_trials(algorithm_name, trials)
         design_capability = shared_design_capability(algorithm_name)
         supports_shared_design = design_capability == "injected-x0-y0"
         result = if supports_shared_design

@@ -13,6 +13,14 @@ SPEC.loader.exec_module(correctness)
 
 
 class PythonCapabilityTests(unittest.TestCase):
+    def test_deterministic_shgo_is_one_realization(self):
+        trials = range(1, 6)
+        self.assertEqual(correctness.benchmark_trials("SHGO", trials), (1,))
+        self.assertEqual(
+            correctness.benchmark_trials("SMBO", trials),
+            (1, 2, 3, 4, 5),
+        )
+
     def test_shared_initial_design_capabilities_are_explicit(self):
         bounds = [(0.0, 1.0)] * 2
         initial = np.array([0.25, 0.75])

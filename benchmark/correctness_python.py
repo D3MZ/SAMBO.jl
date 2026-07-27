@@ -141,6 +141,11 @@ def shared_design_capability(algorithm):
     )
 
 
+def benchmark_trials(algorithm, trials):
+    trials = tuple(trials)
+    return trials[:1] if algorithm == "SHGO" else trials
+
+
 def normalized_gap(value, optimum):
     return max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
 
@@ -182,7 +187,7 @@ def main(trials=DEFAULT_TRIALS):
     )
     for problem, objective, bounds, optimum, target, quality_target in CASES:
         for algorithm, method, budget in ALGORITHMS:
-            for trial_id in trials:
+            for trial_id in benchmark_trials(algorithm, trials):
                 initial_point = shared_initial_point(
                     problem,
                     bounds,

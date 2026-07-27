@@ -1,4 +1,4 @@
-module CorrectedParityReviewTests
+module NativeDefaultReviewTests
 
 using LinearAlgebra
 using Random
@@ -33,7 +33,7 @@ function table_algorithms(markdown, heading)
     )
 end
 
-@testset "Corrected parity review" begin
+@testset "Native-default benchmark review" begin
     @testset "comparison identifiers and replay metadata" begin
         for source in (JULIA_CORRECTNESS, PYTHON_CORRECTNESS)
             @test occursin("trial_id", source)
@@ -57,9 +57,13 @@ end
     end
 
     @testset "native defaults are not documented as exact parity" begin
-        @test occursin("native default end-to-end workload", lowercase(README))
-        @test !occursin("equivalent seeded Rosenbrock workloads", README)
-        @test occursin("nonseparability", lowercase(README))
+        readme = lowercase(README)
+        @test occursin(r"native-default\s+cross-runtime\s+non-inferiority", readme)
+        @test occursin(r"not an algorithmic parity\s+test", readme)
+        @test !occursin("equivalent seeded rosenbrock workloads", readme)
+        @test occursin("nonseparability", readme)
+        @test occursin("descriptive", readme)
+        @test occursin("quality-clipped", readme)
     end
 
     @testset "rotation diagnostic and classification" begin

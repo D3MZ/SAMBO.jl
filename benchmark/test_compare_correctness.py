@@ -89,7 +89,7 @@ class ComparatorTests(unittest.TestCase):
             [result_row("Julia", minimum=0.0, target=200.0)],
             [result_row("Python", minimum=100.0, target=200.0)],
         )
-        with self.assertRaisesRegex(SystemExit, "parity"):
+        with self.assertRaisesRegex(SystemExit, "exact equivalence"):
             compare_correctness.main(*paths)
 
     def test_duplicate_case_keys_are_rejected(self):
@@ -183,6 +183,14 @@ class ComparatorTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, field):
                     compare_correctness.main(*paths)
 
+    def test_dirty_source_commit_is_rejected(self):
+        paths = self.paired_paths(
+            [result_row("Julia", source_commit="deadbeef-dirty")],
+            [result_row("Python", source_commit="deadbeef-dirty")],
+        )
+        with self.assertRaisesRegex(SystemExit, "non-reproducible source_commit"):
+            compare_correctness.main(*paths)
+
     def test_nonfinite_values_are_rejected(self):
         for minimum in ("nan", "inf", "-inf"):
             with self.subTest(minimum=minimum):
@@ -207,6 +215,14 @@ class ComparatorTests(unittest.TestCase):
             [result_row("Python", minimum=0.0, target=1.0, success="false")],
         )
         compare_correctness.main(*paths)
+
+    def test_exact_equivalence_does_not_apply_quality_clipping(self):
+        paths = self.paired_paths(
+            [result_row("Julia", minimum=0.1, quality_target=200.0)],
+            [result_row("Python", minimum=10.0, quality_target=200.0)],
+        )
+        with self.assertRaisesRegex(SystemExit, "exact equivalence"):
+            compare_correctness.main(*paths)
 
     def test_paired_bootstrap_interval_and_noninferiority(self):
         lower, upper = compare_correctness.paired_bootstrap_interval(

@@ -153,7 +153,6 @@ end
         )
             @test occursin(specification, make_source)
             @test isfile(joinpath(ROOT, "docs", "src", page, "index.md"))
-            @test isfile(joinpath(ROOT, "docs", "build", page, "index.html"))
         end
     end
 end

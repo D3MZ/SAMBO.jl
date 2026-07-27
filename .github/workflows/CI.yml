@@ -33,7 +33,7 @@ jobs:
         arch:
           - x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
@@ -68,7 +68,7 @@ jobs:
     env:
       JULIA_NUM_THREADS: 4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
@@ -79,7 +79,7 @@ jobs:
     name: Core without weak dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
@@ -93,7 +93,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify clean reproducible source
         run: test -z "$(git status --porcelain --untracked-files=all)"
       - uses: julia-actions/setup-julia@v2
@@ -145,7 +145,7 @@ jobs:
             package: CairoMakie
             test: makie
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
@@ -165,7 +165,7 @@ jobs:
     name: Native inference checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
@@ -178,7 +178,7 @@ jobs:
     name: Warm allocation regressions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
@@ -195,7 +195,7 @@ jobs:
       contents: write
       statuses: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'

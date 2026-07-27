@@ -231,9 +231,9 @@ checked separately without quality clipping.
 | SMBO | Hartmann-6 (−3.322; ≤ −2.8) | −3.262; 5/5 | −2.426; 2/5 |
 | SMBO | Rotated Rastrigin-5 (0; ≤ 12) | 8.568; 4/5 | 36.074; 0/5 |
 | SMBO | Rotated Rosenbrock-5 (0; ≤ 12) | 44.823; 0/5 | 99.929; 0/5 |
-| SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −3.261; 5/5 | −3.322; 5/5 |
-| SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 14.264; 2/5 | 2.985; 5/5 |
-| SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 6.011; 5/5 | 4.28e−09; 5/5 |
+| SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −3.29; 1/1 | −3.322; 1/1 |
+| SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 5.198; 1/1 | 2.985; 1/1 |
+| SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 8.504; 1/1 | 4.28e−09; 1/1 |
 <!-- correctness-table:end -->
 
 Reproduce the matrix from a clean checkout:

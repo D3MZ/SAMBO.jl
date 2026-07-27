@@ -55,7 +55,7 @@ function convergencedata(
     )
 end
 
-"Return cumulative regret relative to `optimum` (the observed minimum by default)."
+"Return cumulative regret relative to `optimum` (the observed optimum by default)."
 function regretdata(
     result::Result;
     optimum=minimum(result),
@@ -86,10 +86,24 @@ function _canonical_grid(
     ::Type{T},
 ) where {T}
     descriptor = space.dimensions[dimension_index]
-    grid = collect(range(zero(T), one(T); length=resolution))
-    map!(value -> T(canonicalize_coordinate(descriptor, value)), grid, grid)
-    unique!(grid)
-    return grid
+    return _canonical_grid(descriptor, resolution, T)
+end
+function _canonical_grid(descriptor::Continuous, resolution, ::Type{T}) where {T}
+    return descriptor.lower == descriptor.upper ?
+        T[zero(T)] :
+        collect(range(zero(T), one(T); length=resolution))
+end
+function _canonical_grid(descriptor::AbstractRange, resolution, ::Type{T}) where {T}
+    count = length(descriptor)
+    return count == 1 ?
+        T[zero(T)] :
+        collect(range(zero(T), one(T); length=count))
+end
+function _canonical_grid(descriptor::Choices, resolution, ::Type{T}) where {T}
+    count = length(descriptor.values)
+    return count == 1 ?
+        T[zero(T)] :
+        collect(range(zero(T), one(T); length=count))
 end
 
 _feasible_columns(result, queries, ::UnconstrainedModelDependence) =
@@ -192,12 +206,17 @@ function _checkdimensions(space, dimensions)
 end
 
 "Return decoded observations and latent coordinates for evaluation-matrix plots."
-function evaluationsdata(result::Result; dimensions=1:dimension(result.space))
+function evaluationsdata(
+    result::Result;
+    dimensions=1:dimension(result.space),
+    observations=EvaluationsOnly(),
+)
     dims = _checkdimensions(result.space, dimensions)
+    indices = _diagnostic_indices(result.trace, observations)
     return (
-        latent=Matrix(latentpoints(result.trace)[dims, :]),
-        values=collect(objectivevalues(result.trace)),
-        order=collect(@view result.trace.evaluation_numbers[1:result.trace.count]),
+        latent=Matrix(latentpoints(result.trace)[dims, indices]),
+        values=collect(objectivevalues(result.trace)[indices]),
+        order=collect(result.trace.evaluation_numbers[indices]),
         labels=[_dimensionlabel(result.space, i) for i in dims],
         ticks=[_dimensionticks(result.space, i) for i in dims],
     )
@@ -245,6 +264,9 @@ function partialdependence(
         size(background) == (dimension(result.space), samples) ||
             throw(DimensionMismatch("background must be dimensions × samples"))
         generated = Matrix{TX}(background)
+        for column in axes(generated, 2)
+            _checklatent(result.space, @view generated[:, column])
+        end
         _canonicalize_samples!(generated, result.space)
     end
     grid_sizes = length.(grids)

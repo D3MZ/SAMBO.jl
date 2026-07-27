@@ -2,13 +2,13 @@ struct MoveTowardCentroid end
 struct RejectAndResample end
 struct ProjectToBounds end
 
-struct SCEUA{R<:Real,C<:Real,P}
+struct SCEUA{R<:Real,C<:Real,P,T<:Real}
     complexes::Int
     complex_size::Int
     reflection::R
     contraction::C
     repair::P
-    population_tolerance::Float64
+    population_tolerance::T
 end
 function SCEUA(;
     complexes=0,
@@ -33,7 +33,7 @@ function SCEUA(;
         reflection,
         contraction,
         repair,
-        Float64(population_tolerance),
+        population_tolerance,
     )
 end
 
@@ -51,6 +51,8 @@ mutable struct SCEUAWorkspace{TX,TY}
     failed_indices::Vector{Int}
     valid_indices::Vector{Int}
     initialized::Bool
+    finite_feasible::Union{Nothing,Vector{Int}}
+    occupied::BitSet
 end
 
 mutable struct SCEUAState{C,A,W}
@@ -65,7 +67,15 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
     d = dimension(problem.space)
     complexes = algorithm.complexes == 0 ? clamp(d, 2, 5) : algorithm.complexes
     complex_size = algorithm.complex_size == 0 ? max(2d + 1, 5) : algorithm.complex_size
-    population_size = min(core.trace.count + _remaining(core), complexes * complex_size)
+    finite_feasible = _finite_feasible_indices(problem)
+    population_limit = isnothing(finite_feasible) ?
+        complexes * complex_size : length(finite_feasible)
+    population_size = min(
+        core.trace.count + _remaining(core),
+        population_limit,
+    )
+    !isnothing(finite_feasible) && isempty(finite_feasible) &&
+        (core.retcode = :infeasible_space)
     TX = eltype(core.trace.latent_points)
     TY = eltype(core.trace.objective_values)
     workspace = SCEUAWorkspace(
@@ -82,6 +92,8 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
         Vector{Int}(undef, population_size),
         Vector{Int}(undef, population_size),
         false,
+        finite_feasible,
+        BitSet(),
     )
     return SCEUAState(core, algorithm, workspace)
 end
@@ -99,22 +111,55 @@ function _initialize_sceua!(state::SCEUAState)
         workspace.population[:, 1:initial_count] .=
             @view trace.latent_points[:, initial_indices]
         workspace.values[1:initial_count] .= trace.objective_values[initial_indices]
+        if !isnothing(workspace.finite_feasible)
+            for column in 1:initial_count
+                push!(
+                    workspace.occupied,
+                    canonical_index(
+                        state.core.problem.space,
+                        @view(workspace.population[:, column]),
+                    ),
+                )
+            end
+        end
     end
     sample_count = population_count - initial_count
     if sample_count > 0
         sampled = @view workspace.population[:, initial_count+1:population_count]
-        _sample_feasible!(
-            state.core.rng,
-            sampled,
-            LatinHypercubeDesign(),
-            state.core.problem,
-        )
+        if isnothing(workspace.finite_feasible)
+            _sample_feasible!(
+                state.core.rng,
+                sampled,
+                LatinHypercubeDesign(),
+                state.core.problem,
+            )
+        else
+            unused = filter(
+                index -> !(index in workspace.occupied),
+                workspace.finite_feasible,
+            )
+            Random.shuffle!(state.core.rng, unused)
+            length(unused) >= sample_count ||
+                throw(AssertionError("finite SCE-UA population exceeds unused points"))
+            for column in 1:sample_count
+                canonical_latent!(
+                    @view(sampled[:, column]),
+                    state.core.problem.space,
+                    unused[column],
+                )
+                push!(workspace.occupied, unused[column])
+            end
+        end
         values = _evaluate_batch(state.core, sampled)
         state.core.iteration += 1
         _commit_batch!(state.core, sampled, values)
         workspace.values[initial_count+1:population_count] .= values
     end
     workspace.initialized = true
+    !isnothing(workspace.finite_feasible) &&
+        length(workspace.occupied) >= length(workspace.finite_feasible) &&
+        !_finished(state.core) &&
+        (state.core.retcode = :space_exhausted)
     return state
 end
 
@@ -272,7 +317,7 @@ function step!(state::SCEUAState)
         worst_indices[active] = worst_index
     end
     active = min(active, _remaining(core))
-    active == 0 && (core.retcode = :infeasible_space; return state)
+    active == 0 && (core.retcode = :stalled; return state)
     proposals = @view proposals[:, 1:active]
     worst_indices = @view worst_indices[1:active]
     reflection_values = @view workspace.proposal_values[1:active]

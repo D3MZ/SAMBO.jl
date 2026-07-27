@@ -1,0 +1,4 @@
+python_sambo_version,algorithm,time_ms,peak_bytes,positive_tracemalloc_blocks,minimum,objective_calls,reported_observations,max_iter_setting,timing_repeats,seed
+1.25.2,SCE-UA,1.432999,51456,272,1.05673639178,40,40,40,10,42
+1.25.2,SMBO,681.298146,14966569,927,0.000309990931915,40,39,40,10,42
+1.25.2,SHGO,1.821104,84835,779,0,40,40,40,10,42

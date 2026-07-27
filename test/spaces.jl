@@ -83,6 +83,24 @@
     @test SAMBO.latenttype(SearchSpace(BigFloat; x=Continuous(0, 1))) == BigFloat
     @test_throws ArgumentError SearchSpace(evaluation=1:2)
 
+    fixed_continuous = SearchSpace(x=Continuous(2.0, 2.0))
+    @test SAMBO.canonical_index(fixed_continuous, [0.0]) == 1
+    @test_throws ArgumentError SAMBO.canonical_index(
+        SearchSpace(x=Continuous(0.0, 1.0)),
+        [0.5],
+    )
+    fixed_box = Box([1.0], [1.0])
+    @test SAMBO.canonical_index(fixed_box, [0.0]) == 1
+    @test_throws ArgumentError SAMBO.canonical_index(box, [0.5, 0.5])
+    fixed_latent = fill(NaN, 1)
+    @test SAMBO.canonical_latent!(fixed_latent, fixed_box, 1) == [0.0]
+    @test_throws BoundsError SAMBO.canonical_latent!(fixed_latent, fixed_box, 2)
+    @test SAMBO.canonical_latent!(
+        zeros(2),
+        SearchSpace(fixed=Continuous(1.0, 1.0), only=Choices(:only)),
+        1,
+    ) == [0.0, 0.0]
+
     for design in (
         SAMBO.UniformDesign(),
         SAMBO.LatinHypercubeDesign(),

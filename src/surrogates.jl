@@ -4,18 +4,31 @@ struct IsotropicLengthScale{T<:Real}
 end
 struct ARDLengthScale{V<:AbstractVector}
     values::V
+    function ARDLengthScale(values::AbstractVector)
+        !isempty(values) && all(value -> isfinite(value) && value > 0, values) ||
+            throw(ArgumentError("ARD length scales must be finite and positive"))
+        copied = collect(values)
+        new{typeof(copied)}(copied)
+    end
 end
 struct GeometricJitter{T<:Real}
     initial::T
     factor::T
     attempts::Int
+    function GeometricJitter(
+        initial::T,
+        factor::T,
+        attempts::Int,
+    ) where {T<:Real}
+        isfinite(initial) && initial > 0 ||
+            throw(ArgumentError("initial jitter must be finite and positive"))
+        isfinite(factor) && factor > 1 ||
+            throw(ArgumentError("jitter factor must be finite and greater than one"))
+        attempts > 0 || throw(ArgumentError("jitter attempts must be positive"))
+        new{T}(initial, factor, attempts)
+    end
 end
 function GeometricJitter(initial=1e-10, factor=10.0, attempts=8)
-    isfinite(initial) && initial > 0 ||
-        throw(ArgumentError("initial jitter must be finite and positive"))
-    isfinite(factor) && factor > 1 ||
-        throw(ArgumentError("jitter factor must be finite and greater than one"))
-    attempts > 0 || throw(ArgumentError("jitter attempts must be positive"))
     promoted = promote(initial, factor)
     return GeometricJitter(promoted[1], promoted[2], attempts)
 end
@@ -28,9 +41,7 @@ function _length_scale(scale::Real)
     return IsotropicLengthScale(scale)
 end
 function _length_scale(scale::AbstractVector)
-    !isempty(scale) && all(value -> isfinite(value) && value > 0, scale) ||
-        throw(ArgumentError("ARD length scales must be finite and positive"))
-    return ARDLengthScale(collect(scale))
+    return ARDLengthScale(scale)
 end
 _jitter_policy(policy::GeometricJitter) = policy
 _jitter_policy(initial::Real) = GeometricJitter(initial)
@@ -178,6 +189,12 @@ function _factor_covariance(covariance, policy::GeometricJitter, ::Type{T}) wher
 end
 
 function fitmodel(specification::GaussianProcessSurrogate, points, values, rng=Random.default_rng())
+    size(points, 2) == length(values) ||
+        throw(DimensionMismatch("one value per training point required"))
+    all(isfinite, points) ||
+        throw(ArgumentError("training points must be finite"))
+    all(isfinite, values) ||
+        throw(ArgumentError("training values must be finite"))
     isfinite(specification.noise) && specification.noise >= 0 ||
         throw(ArgumentError("noise must be finite and nonnegative"))
     T = promote_type(eltype(points), eltype(values), typeof(float(specification.noise)))
@@ -292,6 +309,26 @@ struct EnsembleModel{M}
     models::Vector{M}
 end
 
+mutable struct EnsemblePredictionWorkspace{T,W}
+    member_mean::Vector{T}
+    member_variance::Vector{T}
+    base_workspace::W
+end
+predictionworkspace(specification::EnsembleSurrogate, ::Type{T}) where {T} =
+    EnsemblePredictionWorkspace(
+        T[],
+        T[],
+        predictionworkspace(specification.base, T),
+    )
+function _ensure_ensemble_capacity!(
+    workspace::EnsemblePredictionWorkspace,
+    candidates,
+)
+    resize!(workspace.member_mean, candidates)
+    resize!(workspace.member_variance, candidates)
+    return workspace
+end
+
 function fitmodel(specification::EnsembleSurrogate, points, values, rng=Random.default_rng())
     count = size(points, 2)
     first_indices = Random.rand(rng, 1:count, count)
@@ -316,12 +353,35 @@ function fitmodel(specification::EnsembleSurrogate, points, values, rng=Random.d
 end
 
 function predictmeanvariance!(means, variances, model::EnsembleModel, points)
+    workspace = EnsemblePredictionWorkspace(
+        similar(means, 0),
+        similar(variances, 0),
+        nothing,
+    )
+    return predictmeanvariance!(means, variances, model, points, workspace)
+end
+function predictmeanvariance!(
+    means,
+    variances,
+    model::EnsembleModel,
+    points,
+    workspace::EnsemblePredictionWorkspace,
+)
+    length(means) == size(points, 2) == length(variances) ||
+        throw(DimensionMismatch("one prediction per candidate required"))
+    _ensure_ensemble_capacity!(workspace, length(means))
     fill!(means, zero(eltype(means)))
     fill!(variances, zero(eltype(variances)))
-    member_mean = similar(means)
-    member_variance = similar(variances)
+    member_mean = workspace.member_mean
+    member_variance = workspace.member_variance
     for member in model.models
-        predictmeanvariance!(member_mean, member_variance, member, points)
+        predictmeanvariance!(
+            member_mean,
+            member_variance,
+            member,
+            points,
+            workspace.base_workspace,
+        )
         @. means += member_mean
         @. variances += member_variance + member_mean^2
     end
@@ -332,10 +392,31 @@ function predictmeanvariance!(means, variances, model::EnsembleModel, points)
 end
 
 function predictmean!(means, model::EnsembleModel, points)
+    workspace = EnsemblePredictionWorkspace(
+        similar(means, 0),
+        similar(means, 0),
+        nothing,
+    )
+    return predictmean!(means, model, points, workspace)
+end
+function predictmean!(
+    means,
+    model::EnsembleModel,
+    points,
+    workspace::EnsemblePredictionWorkspace,
+)
+    length(means) == size(points, 2) ||
+        throw(DimensionMismatch("one prediction per candidate required"))
+    _ensure_ensemble_capacity!(workspace, length(means))
     fill!(means, zero(eltype(means)))
-    member_mean = similar(means)
+    member_mean = workspace.member_mean
     for member in model.models
-        predictmean!(member_mean, member, points)
+        predictmean!(
+            member_mean,
+            member,
+            points,
+            workspace.base_workspace,
+        )
         @. means += member_mean
     end
     means ./= length(model.models)

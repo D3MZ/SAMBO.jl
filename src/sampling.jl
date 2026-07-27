@@ -69,15 +69,19 @@ function sample!(rng, destination::AbstractMatrix{T}, design::HaltonDesign, spac
     d, n = size(destination)
     d == dimension(space) || throw(DimensionMismatch("sample matrix and space differ in dimension"))
     n == 0 && return destination
-    sequence = QuasiMonteCarlo.sample(
-        n + design.skip,
-        d,
-        QuasiMonteCarlo.HaltonSample(
-            R=QuasiMonteCarlo.Shift(rng=rng),
-        ),
-        T,
-    )::Matrix{T}
-    destination .= @view sequence[:, design.skip+1:end]
+    bases = QuasiMonteCarlo.nextprimes(1, d)
+    for column in axes(destination, 2), axis in axes(destination, 1)
+        index = design.skip + column
+        inverse_base = inv(T(bases[axis]))
+        factor = inverse_base
+        value = zero(T)
+        while index > 0
+            index, digit = divrem(index, bases[axis])
+            value += T(digit) * factor
+            factor *= inverse_base
+        end
+        destination[axis, column] = value
+    end
     return _canonicalize_samples!(destination, space)
 end
 
@@ -86,16 +90,37 @@ function sample!(rng, destination::AbstractMatrix{T}, design::SobolDesign, space
     d, n = size(destination)
     d == dimension(space) || throw(DimensionMismatch("sample matrix and space differ in dimension"))
     n == 0 && return destination
-    sequence = QuasiMonteCarlo.sample(
-        n + design.skip,
-        d,
-        QuasiMonteCarlo.SobolSample(
-            R=QuasiMonteCarlo.Shift(rng=rng),
-        ),
-        T,
-    )::Matrix{T}
-    destination .= @view sequence[:, design.skip+1:end]
+    sequence = QuasiMonteCarlo.Sobol.SobolSeq(d)
+    first = @view destination[:, 1]
+    QuasiMonteCarlo.Sobol.skip!(
+        sequence,
+        design.skip,
+        first;
+        exact=true,
+    )
+    for point in eachcol(destination)
+        QuasiMonteCarlo.Sobol.next!(sequence, point)
+    end
     return _canonicalize_samples!(destination, space)
+end
+
+@inline _isfeasible_latent(
+    ::Problem{F,S,Unconstrained},
+    latent,
+) where {F,S} = true
+@inline _isfeasible_latent(problem::Problem, latent) =
+    isfeasible(problem, decode(problem.space, latent))
+
+function _sample_feasible!(
+    rng,
+    destination,
+    sampler,
+    problem::Problem{F,S,Unconstrained};
+    maximum_attempts=max(1000, 100size(destination, 2)),
+) where {F,S}
+    size(destination, 1) == dimension(problem.space) ||
+        throw(DimensionMismatch("sample matrix and space differ in dimension"))
+    return sample!(rng, destination, sampler, problem.space)
 end
 
 function _sample_feasible!(rng, destination, sampler, problem; maximum_attempts=max(1000, 100size(destination, 2)))
@@ -111,8 +136,7 @@ function _sample_feasible!(rng, destination, sampler, problem; maximum_attempts=
             attempts += 1
             candidate = @view buffer[:, column]
             _canonicalize!(candidate, problem.space)
-            point = decode(problem.space, candidate)
-            if isfeasible(problem, point)
+            if _isfeasible_latent(problem, candidate)
                 count += 1
                 destination[:, count] .= candidate
                 count == requested && return destination
@@ -121,4 +145,38 @@ function _sample_feasible!(rng, destination, sampler, problem; maximum_attempts=
         end
     end
     throw(InfeasibleSpaceError(requested, maximum_attempts))
+end
+
+function _finite_feasible_indices(problem; maximum_cardinality=100_000)
+    cardinality = space_cardinality(problem.space)
+    isnothing(cardinality) && return nothing
+    cardinality <= maximum_cardinality || return nothing
+    latent = Vector{latenttype(problem.space)}(
+        undef,
+        dimension(problem.space),
+    )
+    feasible = Int[]
+    sizehint!(feasible, cardinality)
+    for index in 1:cardinality
+        canonical_latent!(latent, problem.space, index)
+        isfeasible(problem, decode(problem.space, latent)) &&
+            push!(feasible, index)
+    end
+    return feasible
+end
+
+function _finite_points(problem, indices)
+    points = Matrix{latenttype(problem.space)}(
+        undef,
+        dimension(problem.space),
+        length(indices),
+    )
+    for (column, index) in pairs(indices)
+        canonical_latent!(
+            @view(points[:, column]),
+            problem.space,
+            index,
+        )
+    end
+    return points
 end

@@ -11,7 +11,7 @@ struct Continuous{T<:Real}
 end
 Continuous(a::Real, b::Real) = Continuous(promote(a, b)...)
 
-"An unordered categorical search dimension."
+"An ordinal categorical search dimension encoded in the supplied value order."
 struct Choices{V<:Tuple}
     values::V
     function Choices(values::Tuple)
@@ -20,6 +20,7 @@ struct Choices{V<:Tuple}
         new{typeof(values)}(values)
     end
 end
+Choices(values::AbstractVector) = Choices(Tuple(values))
 Choices(values...) = Choices(values)
 
 "A homogeneous, continuous hyperrectangle."
@@ -159,14 +160,42 @@ function decode(
     decoded = _decodedimensions(space.dimensions, z)
     return NamedTuple{Names}(decoded)
 end
-function encode(space::Box, point)
+function encode!(destination, space::Box, point)
+    length(destination) == dimension(space) ||
+        throw(DimensionMismatch("destination and search space differ in dimension"))
     length(point) == dimension(space) || throw(DimensionMismatch("point and search space differ in dimension"))
-    map(space.lower, space.upper, point) do lower, upper, x
+    @inbounds for index in eachindex(destination, space.lower, space.upper, point)
+        lower = space.lower[index]
+        upper = space.upper[index]
+        x = point[index]
         lower <= x <= upper || throw(ArgumentError("point is outside the box"))
-        upper == lower ? zero(eltype(space.lower)) : (x - lower) / (upper - lower)
+        destination[index] = upper == lower ?
+            zero(eltype(destination)) :
+            (x - lower) / (upper - lower)
     end
+    return destination
 end
-function encode(space::SearchSpace, point)
+
+@inline _encode_dimensions!(destination, ::Tuple{}, values, index) =
+    destination
+@inline function _encode_dimensions!(
+    destination,
+    dimensions::Tuple,
+    values,
+    index,
+)
+    destination[index] = _encode(first(dimensions), values[index])
+    return _encode_dimensions!(
+        destination,
+        Base.tail(dimensions),
+        values,
+        index + 1,
+    )
+end
+
+function encode!(destination, space::SearchSpace, point)
+    length(destination) == dimension(space) ||
+        throw(DimensionMismatch("destination and search space differ in dimension"))
     names = dimensionnames(space)
     values = if point isa NamedTuple && !isnothing(names)
         all(name -> hasproperty(point, name), names) ||
@@ -176,13 +205,18 @@ function encode(space::SearchSpace, point)
         Tuple(point)
     end
     length(values) == dimension(space) || throw(DimensionMismatch("point and search space differ in dimension"))
-    [latenttype(space)(_encode(space.dimensions[i], values[i])) for i in 1:dimension(space)]
+    return _encode_dimensions!(
+        destination,
+        Tuple(space.dimensions),
+        values,
+        1,
+    )
 end
-function encode!(destination, space, point)
-    length(destination) == dimension(space) ||
-        throw(DimensionMismatch("destination and search space differ in dimension"))
-    destination .= encode(space, point)
-    return destination
+
+function encode(space, point)
+    destination =
+        Vector{latenttype(space)}(undef, dimension(space))
+    return encode!(destination, space, point)
 end
 function project!(z, space=nothing)
     clamp!(z, zero(eltype(z)), one(eltype(z)))
@@ -201,18 +235,13 @@ end
     _encode(dimension, _decode(dimension, value))
 @inline canonicalize_coordinate(dimension::Choices, value) =
     _encode(dimension, _decode(dimension, value))
-@generated function _canonicalize_dimensions!(z, dimensions::D) where {D}
-    count = D <: NamedTuple ? length(D.parameters[1]) : length(D.parameters)
-    operations = [
-        :(z[$index] = canonicalize_coordinate(
-            getfield(dimensions, $index),
-            z[$index],
-        )) for index in 1:count
-    ]
-    return Expr(:block, operations..., :(z))
+@inline _canonicalize_dimensions!(z, ::Tuple{}, index) = z
+@inline function _canonicalize_dimensions!(z, dimensions::Tuple, index)
+    z[index] = canonicalize_coordinate(first(dimensions), z[index])
+    return _canonicalize_dimensions!(z, Base.tail(dimensions), index + 1)
 end
 function _canonicalize!(z, space::SearchSpace)
-    _canonicalize_dimensions!(z, space.dimensions)
+    _canonicalize_dimensions!(z, Tuple(space.dimensions), 1)
     return z
 end
 
@@ -223,32 +252,106 @@ function modelmatrix!(destination, space, points)
     return destination
 end
 active_dimensions(space::Box) = findall(i -> space.lower[i] != space.upper[i], eachindex(space.lower))
+_isactive(dimension::Continuous) = dimension.lower != dimension.upper
+_isactive(dimension::AbstractRange) = length(dimension) > 1
+_isactive(dimension::Choices) = length(dimension.values) > 1
 function active_dimensions(space::SearchSpace)
-    findall(1:dimension(space)) do i
-        d = space.dimensions[i]
-        d isa Continuous ? d.lower != d.upper :
-        d isa AbstractRange ? length(d) > 1 :
-        d isa Choices ? length(d.values) > 1 : true
-    end
+    return findall(i -> _isactive(space.dimensions[i]), 1:dimension(space))
 end
 
 function space_cardinality(space::Box)
     return all(space.lower .== space.upper) ? 1 : nothing
 end
+_dimension_cardinality(dimension::Continuous) =
+    dimension.lower == dimension.upper ? 1 : nothing
+_dimension_cardinality(dimension::AbstractRange) = length(dimension)
+_dimension_cardinality(dimension::Choices) = length(dimension.values)
 function space_cardinality(space::SearchSpace)
     cardinality = 1
     for descriptor in space.dimensions
-        count = if descriptor isa Continuous
-            descriptor.lower == descriptor.upper ? 1 : return nothing
-        elseif descriptor isa AbstractRange
-            length(descriptor)
-        else
-            length(descriptor.values)
-        end
+        count = _dimension_cardinality(descriptor)
+        isnothing(count) && return nothing
         cardinality > typemax(Int) ÷ count && return nothing
         cardinality *= count
     end
     return cardinality
+end
+
+_canonical_level_index(dimension::Continuous, value) =
+    dimension.lower == dimension.upper ? 1 :
+    throw(ArgumentError("continuous search spaces do not have canonical indices"))
+function _canonical_level_index(dimension::AbstractRange, value)
+    index = findfirst(isequal(_decode(dimension, value)), dimension)
+    isnothing(index) &&
+        throw(ArgumentError("value is not in the discrete search dimension"))
+    return index
+end
+function _canonical_level_index(dimension::Choices, value)
+    index = findfirst(
+        isequal(_decode(dimension, value)),
+        dimension.values,
+    )
+    isnothing(index) &&
+        throw(ArgumentError("categorical value is not in the search space"))
+    return index
+end
+
+function canonical_index(space::Box, latent)
+    space_cardinality(space) == 1 ||
+        throw(ArgumentError("continuous boxes do not have canonical indices"))
+    _checklatent(space, latent)
+    return 1
+end
+function canonical_index(space::SearchSpace, latent)
+    isnothing(space_cardinality(space)) &&
+        throw(ArgumentError("continuous search spaces do not have canonical indices"))
+    _checklatent(space, latent)
+    index = 1
+    stride = 1
+    for axis in 1:dimension(space)
+        descriptor = space.dimensions[axis]
+        level = _canonical_level_index(descriptor, latent[axis])
+        index += (level - 1) * stride
+        stride *= _dimension_cardinality(descriptor)
+    end
+    return index
+end
+
+_canonical_level_value(::Continuous, level, count, ::Type{T}) where {T} =
+    zero(T)
+_canonical_level_value(
+    ::Union{AbstractRange,Choices},
+    level,
+    count,
+    ::Type{T},
+) where {T} = count == 1 ? zero(T) : T(level - 1) / T(count - 1)
+
+function canonical_latent!(destination, space::Box, index::Integer)
+    space_cardinality(space) == 1 && index == 1 ||
+        throw(BoundsError(space, index))
+    fill!(destination, zero(eltype(destination)))
+    return destination
+end
+function canonical_latent!(destination, space::SearchSpace, index::Integer)
+    cardinality = space_cardinality(space)
+    isnothing(cardinality) && throw(ArgumentError(
+        "continuous search spaces do not have canonical indices",
+    ))
+    1 <= index <= cardinality || throw(BoundsError(space, index))
+    remainder = index - 1
+    for axis in 1:dimension(space)
+        descriptor = space.dimensions[axis]
+        count = _dimension_cardinality(descriptor)
+        level = rem(remainder, count) + 1
+        remainder = fld(remainder, count)
+        destination[axis] = _canonical_level_value(
+            descriptor,
+            level,
+            count,
+            eltype(destination),
+        )
+    end
+    return destination
 end
 dimensionlabel(space, i) = _dimensionlabel(space, i)
 dimensionticks(space, i) = _dimensionticks(space, i)
@@ -258,9 +361,15 @@ function _dimensionlabel(space::SearchSpace, i)
     names = dimensionnames(space)
     return isnothing(names) ? "x$i" : string(names[i])
 end
-function _dimensionticks(space::SearchSpace, i)
-    d = space.dimensions[i]
-    vals = d isa Choices ? d.values : d isa AbstractRange && length(d) <= 20 ? Tuple(d) : nothing
-    isnothing(vals) ? nothing : (collect(range(0, 1; length=length(vals))), string.(collect(vals)))
+_dimensionticks(::Continuous) = nothing
+_dimensionticks(dimension::Choices) = (
+    collect(range(0, 1; length=length(dimension.values))),
+    string.(collect(dimension.values)),
+)
+function _dimensionticks(dimension::AbstractRange)
+    length(dimension) <= 20 || return nothing
+    values = collect(dimension)
+    return collect(range(0, 1; length=length(values))), string.(values)
 end
+_dimensionticks(space::SearchSpace, i) = _dimensionticks(space.dimensions[i])
 _dimensionticks(::Box, i) = nothing

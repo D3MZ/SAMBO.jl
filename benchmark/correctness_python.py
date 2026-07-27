@@ -1,10 +1,37 @@
 import csv
+import os
+import platform
+import subprocess
 import sys
 
 import numpy as np
+import sambo
 from sambo import minimize
 
-DEFAULT_SEEDS = range(1, 6)
+DEFAULT_TRIALS = range(1, 6)
+SOURCE_COMMIT = os.environ.get("GITHUB_SHA")
+if not SOURCE_COMMIT:
+    try:
+        root = os.path.dirname(os.path.dirname(__file__))
+        SOURCE_COMMIT = subprocess.check_output(
+            ("git", "-C", root, "rev-parse", "HEAD"),
+            text=True,
+        ).strip()
+        dirty = subprocess.check_output(
+            (
+                "git",
+                "-C",
+                root,
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+            ),
+            text=True,
+        ).strip()
+        if dirty:
+            SOURCE_COMMIT += "-dirty"
+    except (OSError, subprocess.CalledProcessError):
+        SOURCE_COMMIT = "unknown"
 
 ROTATION = np.array(
     [
@@ -20,6 +47,7 @@ HARTMANN6_MINIMIZER = np.array(
     [0.20169, 0.150011, 0.476874, 0.275332, 0.311652, 0.6573]
 )
 
+# These are nonseparable rotated-box robustness cases, not box-invariance tests.
 
 def hartmann6(x):
     alpha = np.array([1.0, 1.2, 3.0, 3.2])
@@ -57,9 +85,30 @@ def rotated_rosenbrock(x):
 
 
 CASES = (
-    ("hartmann6", hartmann6, [(0.0, 1.0)] * 6, -3.322368011415515, -2.8),
-    ("rotated_rastrigin5", rotated_rastrigin, [(-5.12, 5.12)] * 5, 0.0, 12.0),
-    ("rotated_rosenbrock5", rotated_rosenbrock, [(-3.0, 3.0)] * 5, 0.0, 12.0),
+    (
+        "hartmann6",
+        hartmann6,
+        [(0.0, 1.0)] * 6,
+        -3.322368011415515,
+        -2.8,
+        -2.0,
+    ),
+    (
+        "rotated_rastrigin5",
+        rotated_rastrigin,
+        [(-5.12, 5.12)] * 5,
+        0.0,
+        12.0,
+        50.0,
+    ),
+    (
+        "rotated_rosenbrock5",
+        rotated_rosenbrock,
+        [(-3.0, 3.0)] * 5,
+        0.0,
+        12.0,
+        200.0,
+    ),
 )
 ALGORITHMS = (
     ("SCE-UA", "sceua", 1000),
@@ -68,7 +117,35 @@ ALGORITHMS = (
 )
 
 
-def main(seeds=DEFAULT_SEEDS):
+def shared_initial_point(problem, bounds, trial_id):
+    latent = np.array(
+        [
+            (trial_id * (2 * (axis + 1) + 1) % 17) / 17
+            for axis in range(len(bounds))
+        ]
+    )
+    lower = np.array([bound[0] for bound in bounds], dtype=float)
+    upper = np.array([bound[1] for bound in bounds], dtype=float)
+    return lower + latent * (upper - lower)
+
+
+def initial_design_hash(problem, trial_id):
+    return f"shared-design-v1:{problem}:{trial_id}"
+
+
+def shared_design_capability(algorithm):
+    return (
+        "injected-x0-y0"
+        if algorithm == "SMBO"
+        else "not-supported-cross-runtime"
+    )
+
+
+def normalized_gap(value, optimum):
+    return max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
+
+
+def main(trials=DEFAULT_TRIALS):
     assert abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6
     assert rotated_rastrigin(SHIFT) == 0
     assert rotated_rosenbrock(SHIFT) == 0
@@ -76,42 +153,123 @@ def main(seeds=DEFAULT_SEEDS):
     writer.writerow(
         (
             "runtime",
+            "runtime_version",
+            "source_commit",
+            "python_sambo_version",
             "problem",
             "algorithm",
-            "seed",
+            "trial_id",
+            "configuration_hash",
+            "initial_design_hash",
+            "initial_design_capability",
             "budget",
+            "evaluation",
             "evaluations",
+            "iteration",
+            "best_value",
+            "normalized_gap",
             "minimum",
             "optimum",
             "target",
+            "quality_target",
+            "required_hit_rate",
+            "noninferiority_margin",
+            "feasible",
+            "duplicate",
+            "retcode",
             "success",
         )
     )
-    for problem, objective, bounds, optimum, target in CASES:
+    for problem, objective, bounds, optimum, target, quality_target in CASES:
         for algorithm, method, budget in ALGORITHMS:
-            for seed in seeds:
+            for trial_id in trials:
+                initial_point = shared_initial_point(
+                    problem,
+                    bounds,
+                    trial_id,
+                )
+                initial_value = float(objective(initial_point))
+                design_capability = shared_design_capability(algorithm)
+                supports_shared_design = design_capability == "injected-x0-y0"
+                evaluation_trace = []
+
+                def counted_objective(point):
+                    value = float(objective(point))
+                    evaluation_trace.append(
+                        (np.asarray(point, dtype=float).copy(), value)
+                    )
+                    return value
+
+                initial_kwargs = (
+                    {"x0": [initial_point], "y0": [initial_value]}
+                    if supports_shared_design
+                    else {}
+                )
                 result = minimize(
-                    objective,
+                    counted_objective,
                     bounds=bounds,
                     method=method,
                     max_iter=budget,
-                    rng=seed,
+                    rng=trial_id,
+                    **initial_kwargs,
                 )
-                value = float(result.fun)
-                writer.writerow(
-                    (
-                        "Python",
-                        problem,
-                        algorithm,
-                        seed,
-                        budget,
-                        len(result.funv),
-                        f"{value:.17g}",
-                        optimum,
-                        target,
-                        str(value <= target).lower(),
+                if len(evaluation_trace) > budget:
+                    raise RuntimeError(
+                        "Python objective calls exceeded the requested budget"
                     )
+                configuration_hash = (
+                    f"native-default-v1:{algorithm}:{budget}"
                 )
+                design_hash = (
+                    initial_design_hash(problem, trial_id)
+                    if supports_shared_design
+                    else "none"
+                )
+                best = float("inf")
+                seen = set()
+                for evaluation, (point, value) in enumerate(
+                    evaluation_trace,
+                    start=1,
+                ):
+                    best = min(best, value)
+                    point_key = tuple(point.tolist())
+                    duplicate = point_key in seen
+                    seen.add(point_key)
+                    result_code = (
+                        getattr(result, "message", "completed")
+                        if evaluation == len(evaluation_trace)
+                        else "running"
+                    )
+                    writer.writerow(
+                        (
+                            "Python",
+                            platform.python_version(),
+                            SOURCE_COMMIT,
+                            getattr(sambo, "__version__", "unknown"),
+                            problem,
+                            algorithm,
+                            trial_id,
+                            configuration_hash,
+                            design_hash,
+                            design_capability,
+                            budget,
+                            evaluation,
+                            evaluation,
+                            evaluation,
+                            f"{best:.17g}",
+                            f"{normalized_gap(best, optimum):.17g}",
+                            f"{best:.17g}",
+                            optimum,
+                            target,
+                            quality_target,
+                            0.8,
+                            0.25,
+                            "true",
+                            str(duplicate).lower(),
+                            result_code,
+                            str(best <= target).lower(),
+                        )
+                    )
 
 
 if __name__ == "__main__":

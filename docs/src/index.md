@@ -28,7 +28,7 @@ result = minimize(
         (point.method == :fast ? 1.0 : 0.0)
 end
 
-(minimum(result), minimizer(result), evaluation_count(result))
+(bestvalue(result), bestpoint(result), evaluation_count(result))
 ```
 
 For externally evaluated objectives:
@@ -81,6 +81,12 @@ SearchSpace(BigFloat; x=Continuous(big"-1", big"1"))
 `regretdata` counts evaluated observations only. Constrained partial dependence uses
 `FeasibleConditionalDependence()`; select `UnconstrainedModelDependence()` explicitly
 to query the fitted model without feasibility conditioning.
+`evaluationsdata` and `evaluationsplot` also default to evaluated observations;
+use `IncludeKnownObservations()` to include seeded points.
+
+OptimizationBase callbacks receive `OptimizationState` and the current objective.
+`SAMBOTuning()` preserves MLJ measure orientation and linear, logarithmic, or custom
+numeric-range scaling.
 
 ```@index
 ```

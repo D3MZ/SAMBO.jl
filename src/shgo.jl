@@ -15,14 +15,17 @@ Base.showerror(io::IO, error::ComplexConstructionError) =
 struct PatternSearch{T<:Real}
     initial_step::T
     minimum_step::T
+    function PatternSearch(initial_step::T, minimum_step::T) where {T<:Real}
+        isfinite(initial_step) && initial_step > 0 ||
+            throw(ArgumentError("initial_step must be finite and positive"))
+        isfinite(minimum_step) && minimum_step > 0 ||
+            throw(ArgumentError("minimum_step must be finite and positive"))
+        minimum_step <= initial_step ||
+            throw(ArgumentError("minimum_step must not exceed initial_step"))
+        new{T}(initial_step, minimum_step)
+    end
 end
 function PatternSearch(; initial_step=0.15, minimum_step=1e-5)
-    isfinite(initial_step) && initial_step > 0 ||
-        throw(ArgumentError("initial_step must be finite and positive"))
-    isfinite(minimum_step) && minimum_step > 0 ||
-        throw(ArgumentError("minimum_step must be finite and positive"))
-    minimum_step <= initial_step ||
-        throw(ArgumentError("minimum_step must not exceed initial_step"))
     return PatternSearch(promote(initial_step, minimum_step)...)
 end
 initialstep(solver::PatternSearch) = solver.initial_step
@@ -58,6 +61,9 @@ end
 neighbors(complex::NeighborComplex, vertex) = complex.adjacency[vertex]
 
 function buildcomplex(points, ::DelaunayTopology)
+    eltype(points) <: Union{Float32,Float64} || throw(ArgumentError(
+        "Delaunay topology supports Float32 and Float64 coordinates",
+    ))
     _, count = size(points)
     count > 0 || return NeighborComplex(Vector{Vector{Int}}())
     dimension_count = size(points, 1)
@@ -146,6 +152,9 @@ mutable struct TopologicalMultistartWorkspace{TX,TY}
     step_size::TX
     initialized::Bool
     local_minima_count::Int
+    completed_starts::Int
+    proposals::Matrix{TX}
+    proposal_values::Vector{TY}
 end
 
 mutable struct TopologicalMultistartState{C,A,W}
@@ -157,8 +166,10 @@ end
 function _continuous_space(space::Box)
     return true
 end
+_iscontinuous(::Continuous) = true
+_iscontinuous(::Union{AbstractRange,Choices}) = false
 function _continuous_space(space::SearchSpace)
-    return all(dimension -> dimension isa Continuous, space.dimensions)
+    return all(_iscontinuous, space.dimensions)
 end
 
 function init(
@@ -186,6 +197,10 @@ function init(
         algorithm.samples,
         core.trace.count + new_target,
     )
+    required_vertices = dimension(problem.space) == 1 ?
+        2 : dimension(problem.space) + 2
+    sample_count < required_vertices &&
+        (core.retcode = :evaluation_limit)
     workspace = TopologicalMultistartWorkspace(
         Matrix{TX}(undef, dimension(problem.space), sample_count),
         Vector{TY}(undef, sample_count),
@@ -196,6 +211,9 @@ function init(
         TX(initialstep(algorithm.local_solver)),
         false,
         0,
+        0,
+        Matrix{TX}(undef, dimension(problem.space), 2dimension(problem.space)),
+        Vector{TY}(undef, 2dimension(problem.space)),
     )
     return TopologicalMultistartState(core, algorithm, workspace)
 end
@@ -252,7 +270,8 @@ end
 
 function _begin_local_start!(state::TopologicalMultistartState, start)
     workspace = state.workspace
-    start = mod1(start, length(workspace.local_indices))
+    1 <= start <= length(workspace.local_indices) ||
+        throw(BoundsError(workspace.local_indices, start))
     workspace.current_start = start
     index = workspace.local_indices[start]
     workspace.center .= @view workspace.sample_points[:, index]
@@ -261,12 +280,25 @@ function _begin_local_start!(state::TopologicalMultistartState, start)
     return state
 end
 
+struct LocalStartExhausted end
+
+function _finish_local_start!(state::TopologicalMultistartState)
+    workspace = state.workspace
+    workspace.completed_starts += 1
+    if workspace.completed_starts >= length(workspace.local_indices)
+        state.core.retcode = :stalled
+    else
+        _begin_local_start!(state, workspace.current_start + 1)
+    end
+    return LocalStartExhausted()
+end
+
 function _local_proposals(state::TopologicalMultistartState, ::PatternSearch)
     workspace = state.workspace
     core = state.core
     d = dimension(core.problem.space)
     maximum = min(2d, _remaining(core))
-    proposals = Matrix{eltype(workspace.center)}(undef, d, maximum)
+    proposals = @view workspace.proposals[:, 1:maximum]
     count = 0
     for axis in 1:d, direction in (-1, 1)
         count == maximum && break
@@ -285,8 +317,12 @@ function step!(state::TopologicalMultistartState)
     _finished(state.core) && return state
     !state.workspace.initialized && return _initialize_topological_multistart!(state)
     proposals = _local_proposals(state, state.algorithm.local_solver)
-    isempty(proposals) && (state.core.retcode = :infeasible_space; return state)
-    values = _evaluate_batch(state.core, proposals)
+    if isempty(proposals)
+        _finish_local_start!(state)
+        return state
+    end
+    values = @view state.workspace.proposal_values[1:size(proposals, 2)]
+    _evaluate_batch!(values, state.core, proposals)
     state.core.iteration += 1
     _commit_batch!(state.core, proposals, values)
     best = argmin(_loss.(Ref(state.core.problem.sense), values))
@@ -300,7 +336,7 @@ function step!(state::TopologicalMultistartState)
     else
         state.workspace.step_size *= eltype(state.workspace.center)(0.5)
         if state.workspace.step_size < minimumstep(state.algorithm.local_solver)
-            _begin_local_start!(state, state.workspace.current_start + 1)
+            _finish_local_start!(state)
         end
     end
     return state
@@ -341,8 +377,17 @@ the algorithm without changing SHGO.
 """
 struct MinimizeEveryRefinement end
 struct MinimizeAtTermination end
+struct RandomShiftedSampling{S}
+    design::S
+end
+struct FixedShiftDesign{S,V}
+    design::S
+    shift::V
+end
+struct GlobalBoxLocalBounds end
+struct TopographicalLocalBounds end
 
-struct SHGO{S,T,L,M}
+struct SHGO{S,T,L,M,B}
     sampling::S
     topology::T
     local_solver::L
@@ -352,9 +397,10 @@ struct SHGO{S,T,L,M}
     minimum_homology_growth::Int
     homology_patience::Int
     minimization_schedule::M
+    local_bounds::B
 end
 function SHGO(;
-    sampling=SobolDesign(),
+    sampling=RandomShiftedSampling(SobolDesign()),
     topology=DelaunayTopology(),
     local_solver=PatternSearch(),
     sampling_points=0,
@@ -364,6 +410,7 @@ function SHGO(;
     homology_patience=2,
     minimize_every_iteration=true,
     minimization_schedule=nothing,
+    local_bounds=GlobalBoxLocalBounds(),
 )
     sampling_points >= 0 ||
         throw(ArgumentError("sampling_points must be nonnegative"))
@@ -386,6 +433,7 @@ function SHGO(;
         minimum_homology_growth,
         homology_patience,
         schedule,
+        local_bounds,
     )
 end
 
@@ -414,6 +462,7 @@ mutable struct SHGOWorkspace{TX,TY}
     homology_rank_differential::Int
     stagnant_homology_iterations::Int
     initialized_observations::Int
+    sampling_shift::Vector{TX}
     local_center::Vector{TX}
     local_lower::Vector{TX}
     local_upper::Vector{TX}
@@ -441,6 +490,12 @@ function init(
     _seed_initial!(core, initial_points, initial_values)
     TX = eltype(core.trace.latent_points)
     TY = eltype(core.trace.objective_values)
+    sampling_shift = _sampling_shift(
+        core.rng,
+        algorithm.sampling,
+        TX,
+        dimension(problem.space),
+    )
     workspace = SHGOWorkspace(
         Matrix{TX}(
             undef,
@@ -462,6 +517,7 @@ function init(
         0,
         0,
         0,
+        sampling_shift,
         Vector{TX}(undef, dimension(problem.space)),
         Vector{TX}(undef, dimension(problem.space)),
         Vector{TX}(undef, dimension(problem.space)),
@@ -470,6 +526,30 @@ function init(
         Vector{TY}(undef, 2dimension(problem.space)),
     )
     return SHGOState(core, algorithm, workspace)
+end
+
+function _sampling_shift(rng, ::RandomShiftedSampling, ::Type{T}, dimensions) where {T}
+    shift = Vector{T}(undef, dimensions)
+    Random.rand!(rng, shift)
+    return shift
+end
+_sampling_shift(rng, sampling, ::Type{T}, dimensions) where {T} =
+    zeros(T, dimensions)
+
+function sample!(
+    rng,
+    destination::AbstractMatrix,
+    design::FixedShiftDesign,
+    space,
+)
+    sample!(rng, destination, design.design, space)
+    @inbounds for column in axes(destination, 2), axis in axes(destination, 1)
+        destination[axis, column] = mod(
+            destination[axis, column] + design.shift[axis],
+            one(eltype(destination)),
+        )
+    end
+    return _canonicalize_samples!(destination, space)
 end
 
 function _append_samples!(workspace::SHGOWorkspace, points, values)
@@ -503,12 +583,42 @@ end
 
 function _sampling_points_per_refinement(state::SHGOState)
     configured = state.algorithm.sampling_points
-    return configured == 0 ? 2^dimension(state.core.problem.space) + 1 : configured
+    return configured == 0 ?
+        automatic_sampling_count(
+            dimension(state.core.problem.space),
+            _remaining(state.core),
+        ) :
+        configured
+end
+
+function automatic_sampling_count(dimension_count::Integer, remaining::Integer)
+    dimension_count >= 0 ||
+        throw(ArgumentError("dimension count must be nonnegative"))
+    remaining >= 0 ||
+        throw(ArgumentError("remaining budget must be nonnegative"))
+    remaining <= 1 && return Int(remaining)
+    count = 1
+    for _ in 1:dimension_count
+        count > (remaining - 1) ÷ 2 && return Int(remaining)
+        count *= 2
+    end
+    return min(count + 1, Int(remaining))
 end
 
 function _shgo_sampling_design(state::SHGOState)
     skip = state.workspace.sample_count
     return advance(state.algorithm.sampling, skip)
+end
+advance(sampling::RandomShiftedSampling, count) =
+    RandomShiftedSampling(advance(sampling.design, count))
+function _shgo_sampling_design(
+    state::SHGOState{C,<:SHGO{<:RandomShiftedSampling}},
+) where {C}
+    sampling = state.algorithm.sampling
+    return FixedShiftDesign(
+        advance(sampling.design, state.workspace.sample_count),
+        state.workspace.sampling_shift,
+    )
 end
 
 function refine_sampling!(state::SHGOState)
@@ -570,7 +680,25 @@ topographical_candidate_count(state::SHGOState) =
 minimizer_count(state::SHGOState) =
     length(state.workspace.minimizer_values)
 
-function _local_bounds!(lower, upper, state::SHGOState, vertex)
+function _local_bounds!(
+    lower,
+    upper,
+    state::SHGOState,
+    vertex,
+    ::GlobalBoxLocalBounds,
+)
+    fill!(lower, zero(eltype(lower)))
+    fill!(upper, one(eltype(upper)))
+    return lower, upper
+end
+
+function _local_bounds!(
+    lower,
+    upper,
+    state::SHGOState,
+    vertex,
+    ::TopographicalLocalBounds,
+)
     workspace = state.workspace
     fill!(lower, zero(eltype(lower)))
     fill!(upper, one(eltype(upper)))
@@ -605,8 +733,8 @@ end
 Locally minimize a SHGO topographical candidate.
 
 Packages can extend this method for their local-solver type. Implementations
-must consume objective evaluations through `state.core` and return
-`(point, value)`.
+use the public solver-context accessors and consume objective evaluations through
+`evaluate!(state, values, candidates)`, then return `(point, value)`.
 """
 function local_minimize!(
     state::SHGOState,
@@ -690,7 +818,13 @@ function update_minimizer_pool!(state::SHGOState)
         workspace.mapped_vertices[candidate] = true
         lower = workspace.local_lower
         upper = workspace.local_upper
-        _local_bounds!(lower, upper, state, candidate)
+        _local_bounds!(
+            lower,
+            upper,
+            state,
+            candidate,
+            state.algorithm.local_bounds,
+        )
         automatic_budget = max(32, 16dimension(state.core.problem.space))
         budget = state.algorithm.local_budget == 0 ?
             automatic_budget : state.algorithm.local_budget

@@ -4,7 +4,11 @@ using Random
 using SAMBO
 
 root = @__DIR__
-output = joinpath(root, "plots", "julia")
+output = get(
+    ENV,
+    "SAMBO_PLOT_OUTPUT",
+    joinpath(root, "plots", "julia"),
+)
 mkpath(output)
 
 raw = readdlm(joinpath(root, "plots", "trace.csv"), ',', Float64; skipstart=1)

@@ -1,0 +1,4 @@
+julia_version,algorithm,time_ms,bytes,allocations,minimum,objective_calls,requested_budget,timing_samples,seed
+1.12.6,SCE-UA,0.0221045,37952,306,4.141876509432554,40,40,20,42
+1.12.6,SMBO,12.7215415,5129632,48454,0.9367509709952995,40,40,20,42
+1.12.6,SHGO,0.0403125,41568,347,4.63850033338124,40,40,20,42

@@ -41,6 +41,13 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+      - name: Test cross-runtime comparator
+        if: matrix.version == '1.12'
+        run: >-
+          python3 -m unittest -v
+          benchmark/test_compare_correctness.py
+          benchmark/test_update_readme.py
+          benchmark/test_update_correctness_readme.py
       - name: Generate instrumented-line coverage
         if: matrix.version == '1.12'
         run: julia scripts/instrumented_lcov.jl src ext > lcov.info
@@ -90,7 +97,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-      - run: python -m pip install sambo==1.25.2
+      - run: python -m pip install sambo==1.25.2 joblib scikit-learn
+      - run: python -m unittest -v benchmark/test_python_capabilities.py
       - run: julia --project=. benchmark/correctness_julia.jl > julia-correctness.csv
       - run: python benchmark/correctness_python.py > python-correctness.csv
       - run: python benchmark/compare_correctness.py julia-correctness.csv python-correctness.csv
@@ -127,6 +135,9 @@ jobs:
           Pkg.add("${{ matrix.package }}")
       - name: Test extension
         run: julia --project=/tmp/sambo-extension test/extensions/${{ matrix.test }}.jl
+      - name: Compare Python and Julia plot images
+        if: matrix.test == 'makie'
+        run: julia --project=/tmp/sambo-extension reference/compare_plots.jl
   inference:
     name: Native inference checks
     runs-on: ubuntu-latest
@@ -140,6 +151,17 @@ jobs:
         run: |
           julia --project=/tmp/sambo-jet -e 'using Pkg; Pkg.develop(path=pwd()); Pkg.add("JET")'
           julia --project=/tmp/sambo-jet test/inference.jl
+  allocations:
+    name: Warm allocation regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v2
+      - name: Run allocation checks
+        run: julia --project=test -e 'using SAMBO, Random, Test; include("test/allocations.jl")'
   docs:
     name: Documentation
     runs-on: ubuntu-latest

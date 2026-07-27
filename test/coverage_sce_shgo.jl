@@ -54,7 +54,7 @@ end
     )
     step!(rejected)
     step!(rejected)
-    @test retcode(result(rejected)) == :infeasible_space
+    @test retcode(result(rejected)) == :stalled
 
     converged = init(
         Problem(x -> sum(abs2, x), Box([-1.0], [1.0])),
@@ -100,8 +100,8 @@ end
     step!(restarted)
     step!(restarted)
     @test restarted.workspace.current_start == 1
-    @test restarted.workspace.step_size ==
-        SAMBO.initialstep(restarted.algorithm.local_solver)
+    @test restarted.workspace.completed_starts == 1
+    @test retcode(result(restarted)) == :stalled
 
     infeasible = solve(
         Problem(
@@ -226,4 +226,31 @@ end
     converged.workspace.stagnant_homology_iterations = 1
     @test SAMBO._step!(converged) isa SAMBO.Refined
     @test retcode(result(converged)) == :success
+
+    finite_seeded = init(
+        Problem(_ -> 0.0, SearchSpace(x=Choices(:only))),
+        SCEUA(complexes=1, complex_size=2);
+        initial_points=[(x=:only,)],
+        initial_values=[0.0],
+        maximum_evaluations=2,
+        rng=MersenneTwister(826),
+    )
+    step!(finite_seeded)
+    @test finite_seeded.workspace.occupied == BitSet([1])
+    @test retcode(result(finite_seeded)) == :space_exhausted
+
+    multiple_starts = init(
+        Problem(x -> x[1]^2, Box([0.0], [1.0])),
+        TopologicalMultistart(samples=4, local_starts=2);
+        maximum_evaluations=8,
+        rng=MersenneTwister(827),
+    )
+    multiple_starts.workspace.local_indices = [1, 2]
+    multiple_starts.workspace.current_start = 1
+    multiple_starts.workspace.sample_points[:, 2] .= 0.75
+    multiple_starts.workspace.sample_values[2] = 0.5625
+    @test SAMBO._finish_local_start!(multiple_starts) isa
+        SAMBO.LocalStartExhausted
+    @test multiple_starts.workspace.current_start == 2
+    @test SAMBO.automatic_sampling_count(2, 100) == 5
 end

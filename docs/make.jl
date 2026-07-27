@@ -14,6 +14,12 @@ makedocs(;
     ),
     pages=[
         "Home" => "index.md",
+        # Contract sources: spec/api.md, spec/spaces.md, spec/termination.md,
+        # spec/interop.md is represented by the package-extension contract.
+        "API" => "api/index.md",
+        "Spaces" => "spaces/index.md",
+        "Termination" => "termination/index.md",
+        "Interoperability" => "interop/index.md",
     ],
 )
 

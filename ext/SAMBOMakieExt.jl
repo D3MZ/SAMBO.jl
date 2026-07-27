@@ -32,8 +32,12 @@ _resultlabels(labels, count) = isnothing(labels) ? nothing : begin
         throw(DimensionMismatch("one label per result is required"))
     collected
 end
+_regret_label(::SAMBO.Minimize) =
+    "Cumulative regret after n evaluations:  Σₜⁿ [f(xₜ) − fₒₚₜ]"
+_regret_label(::SAMBO.Maximize) =
+    "Cumulative regret after n evaluations:  Σₜⁿ [fₒₚₜ − f(xₜ)]"
 _plotscale(::Val{:log}) = log10
-_plotscale(::Val{:symlog}) = Symlog10(1)
+_plotscale(::Val{:symlog}) = Makie.Symlog10(1)
 _plotscale(::Val{:linear}) = identity
 _plotscale(scale::Symbol) = _plotscale(Val(scale))
 _plotscale(scale) = scale === identity ? identity : scale
@@ -161,13 +165,13 @@ function SAMBO.regretplot(
 )
     result_tuple = _results(results)
     isempty(result_tuple) && throw(ArgumentError("at least one result is required"))
-    _common_sense(result_tuple)
+    sense = _common_sense(result_tuple)
     fig = Figure(; merge((size=(640, 480),), figure)...)
     ax = _trace_axis(
         fig[1, 1];
         title="Cumulative regret",
         xlabel="Number of function evaluations n",
-        ylabel="Cumulative regret after n evaluations:  Σₜⁿ [f(xₜ) − fₒₚₜ]",
+        ylabel=_regret_label(sense),
         xscale,
         yscale=scale,
         axis,
@@ -279,13 +283,12 @@ function _continuous_ticks(lower, upper)
 end
 _plot_ticks(space::SAMBO.Box, dimension) =
     _continuous_ticks(space.lower[dimension], space.upper[dimension])
-function _plot_ticks(space::SAMBO.SearchSpace, dimension)
-    ticks = SAMBO._dimensionticks(space, dimension)
-    !isnothing(ticks) && return ticks
-    descriptor = space.dimensions[dimension]
-    return descriptor isa SAMBO.Continuous ?
-        _continuous_ticks(descriptor.lower, descriptor.upper) : nothing
-end
+_plot_ticks(descriptor::SAMBO.Continuous) =
+    _continuous_ticks(descriptor.lower, descriptor.upper)
+_plot_ticks(descriptor::Union{AbstractRange,SAMBO.Choices}) =
+    SAMBO._dimensionticks(descriptor)
+_plot_ticks(space::SAMBO.SearchSpace, dimension) =
+    _plot_ticks(space.dimensions[dimension])
 
 function _jitter(values, space, dimension, amount, rng)
     _isdiscrete(space, dimension) || return values
@@ -294,18 +297,21 @@ function _jitter(values, space, dimension, amount, rng)
     return output
 end
 _isdiscrete(::SAMBO.Box, dimension) = false
+_isdiscrete(::SAMBO.Continuous) = false
+_isdiscrete(::Union{AbstractRange,SAMBO.Choices}) = true
 _isdiscrete(space::SAMBO.SearchSpace, dimension) =
-    space.dimensions[dimension] isa Union{AbstractRange,SAMBO.Choices}
+    _isdiscrete(space.dimensions[dimension])
 _discrete_count(::SAMBO.Box, dimension) = nothing
-function _discrete_count(space::SAMBO.SearchSpace, dimension)
-    descriptor = space.dimensions[dimension]
-    return descriptor isa AbstractRange ? length(descriptor) :
-        descriptor isa SAMBO.Choices ? length(descriptor.values) : nothing
-end
+_discrete_count(::SAMBO.Continuous) = nothing
+_discrete_count(descriptor::AbstractRange) = length(descriptor)
+_discrete_count(descriptor::SAMBO.Choices) = length(descriptor.values)
+_discrete_count(space::SAMBO.SearchSpace, dimension) =
+    _discrete_count(space.dimensions[dimension])
 
 function SAMBO.evaluationsplot(
     result::SAMBO.Result;
     dimensions=1:size(SAMBO.latentpoints(SAMBO.trace(result)), 1),
+    observations=SAMBO.EvaluationsOnly(),
     names=nothing,
     bins=10,
     jitter=0.02,
@@ -325,6 +331,7 @@ function SAMBO.evaluationsplot(
         grid,
         result;
         dimensions=dims,
+        observations,
         names,
         bins,
         jitter,
@@ -340,6 +347,7 @@ function SAMBO.evaluationsplot!(
     position,
     result::SAMBO.Result;
     dimensions=1:size(SAMBO.latentpoints(SAMBO.trace(result)), 1),
+    observations=SAMBO.EvaluationsOnly(),
     names=nothing,
     bins=10,
     jitter=0.02,
@@ -349,10 +357,11 @@ function SAMBO.evaluationsplot!(
     axis=(;),
 )
     dims = SAMBO._checkdimensions(result.space, dimensions)
-    data = SAMBO.evaluationsdata(result; dimensions=dims)
+    data = SAMBO.evaluationsdata(result; dimensions=dims, observations)
     labels = _dimensionlabels(result.space, dims, names)
     count = length(dims)
-    best = SAMBO.argbest(result)
+    best = isempty(data.values) ? nothing :
+        SAMBO.argbest(result.sense, data.values)
     diagonal_axes = Axis[]
     colorplot = nothing
     for row in 1:count, column in 1:row
@@ -398,16 +407,18 @@ function SAMBO.evaluationsplot!(
                 strokecolor=:black,
                 strokewidth=0.5,
             )
-            scatter!(
-                ax,
-                data.latent[column, best],
-                data.latent[row, best];
-                marker=:star5,
-                color=(:red, 0.6),
-                strokecolor=:black,
-                strokewidth=0.5,
-                markersize=22,
-            )
+            if !isnothing(best)
+                scatter!(
+                    ax,
+                    data.latent[column, best],
+                    data.latent[row, best];
+                    marker=:star5,
+                    color=(:red, 0.6),
+                    strokecolor=:black,
+                    strokewidth=0.5,
+                    markersize=22,
+                )
+            end
             limits!(ax, -0.05, 1.05, -0.05, 1.05)
         end
         _apply_dimension_ticks!(ax, result.space, xdimension, ydimension, diagonal)

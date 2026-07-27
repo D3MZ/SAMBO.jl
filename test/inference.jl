@@ -49,8 +49,24 @@ JET.@test_opt target_modules=(SAMBO,) step!(sceua)
 
 smbo = init(
     Problem(Box(fill(-1.0, 2), fill(1.0, 2))),
-    SMBO(initial_points=5, candidate_pool=64);
+    SMBO(
+        initial_points=5,
+        candidate_pool=64,
+        refit_schedule=FixedRefit(100),
+    );
     maximum_evaluations=20,
     rng=MersenneTwister(433),
 )
-JET.@test_opt target_modules=(SAMBO,) ask!(smbo, 2)
+initial_batch = ask!(smbo, 5)
+tell!(
+    smbo,
+    initial_batch,
+    [sum(abs2, point) for point in initial_batch],
+)
+warm_batch = ask!(smbo, 1)
+tell!(
+    smbo,
+    warm_batch,
+    [sum(abs2, point) for point in warm_batch],
+)
+JET.@test_opt target_modules=(SAMBO,) ask!(smbo, 1)

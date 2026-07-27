@@ -202,7 +202,6 @@ function _commit_batch!(
     !count_evaluations || size(candidates, 2) <= _remaining(core) ||
         throw(ArgumentError("batch exceeds the remaining evaluation budget"))
     batch_size = size(candidates, 2)
-    latest_point = nothing
     for column in axes(candidates, 2)
         count_evaluations && (core.evaluations += 1)
         _commit!(
@@ -214,11 +213,20 @@ function _commit_batch!(
             core.iteration,
             core.started,
         )
-        latest_point = decode(core.problem.space, @view candidates[:, column])
         _update_best!(core, source)
     end
-    count_evaluations && batch_size > 0 &&
-        _update_stop!(core, latest_point, values[batch_size], batch_size)
+    if count_evaluations && batch_size > 0
+        latest_point = decode(
+            core.problem.space,
+            @view(candidates[:, batch_size]),
+        )
+        _update_stop!(
+            core,
+            latest_point,
+            values[batch_size],
+            batch_size,
+        )
+    end
     return core
 end
 

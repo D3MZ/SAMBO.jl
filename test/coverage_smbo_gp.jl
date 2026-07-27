@@ -5,14 +5,13 @@ using SAMBO
 struct EmptyCoverageCandidates end
 SAMBO.generate_candidates!(destination, state::SAMBO.SMBOState, ::EmptyCoverageCandidates) = 0
 
-struct ExhaustingCoverageCandidates end
+struct TerminatingCoverageCandidates end
 function SAMBO.generate_candidates!(
     destination,
     state::SAMBO.SMBOState,
-    ::ExhaustingCoverageCandidates,
+    ::TerminatingCoverageCandidates,
 )
-    push!(state.occupied, [0.0])
-    push!(state.occupied, [1.0])
+    state.core.retcode = :stalled
     return 0
 end
 
@@ -42,7 +41,7 @@ end
         maximum_evaluations=3,
         rng=MersenneTwister(1),
     )
-    @test seeded_discrete.occupied == Set([[0.0]])
+    @test seeded_discrete.occupied == BitSet([1])
 
     SAMBO._ensure_candidate_capacity!(
         seeded_discrete.workspace,
@@ -100,10 +99,9 @@ end
         SMBO(
             initial_points=1,
             candidate_pool=4,
-            candidate_sampler=ExhaustingCoverageCandidates(),
         );
-        initial_points=[(x=:a,)],
-        initial_values=[1.0],
+        initial_points=[(x=:a,), (x=:b,)],
+        initial_values=[1.0, 2.0],
         maximum_evaluations=3,
         rng=MersenneTwister(6),
     )
@@ -145,4 +143,48 @@ end
         GeometricJitter(1e-10, 10.0, 2),
         Float64,
     )
+
+    generic_occupied = Set([[0.5]])
+    SAMBO._release_occupied!(
+        generic_occupied,
+        SearchSpace(x=Continuous(0.0, 1.0)),
+        [0.5],
+    )
+    @test isempty(generic_occupied)
+
+    reservoir = init(
+        Problem(SearchSpace(x=Choices(1, 2, 3, 4, 5))),
+        SMBO(initial_points=0, candidate_pool=2);
+        maximum_evaluations=5,
+        rng=MersenneTwister(9),
+    )
+    @test size(SAMBO._unused_finite_candidates(reservoir, 2)) == (1, 2)
+
+    terminating = init(
+        Problem(x -> x.x^2, SearchSpace(x=Continuous(0.0, 1.0))),
+        SMBO(
+            initial_points=1,
+            candidate_pool=4,
+            candidate_sampler=TerminatingCoverageCandidates(),
+        );
+        initial_points=[(x=0.5,)],
+        initial_values=[0.25],
+        maximum_evaluations=2,
+        rng=MersenneTwister(10),
+    )
+    terminating.initial_design_cursor =
+        size(terminating.initial_design, 2) + 1
+    @test isempty(ask!(terminating, 1))
+    @test retcode(result(terminating)) == :stalled
+
+    partial = init(
+        Problem(SearchSpace(x=Continuous(0.0, 1.0))),
+        SMBO(initial_points=2, batch_size=2);
+        maximum_evaluations=3,
+        rng=MersenneTwister(11),
+    )
+    partial_batch = ask!(partial, 2)
+    tell!(partial, partial_batch, [1], [0.5])
+    tell!(partial, partial_batch, [0.25])
+    @test isempty(partial.pending)
 end

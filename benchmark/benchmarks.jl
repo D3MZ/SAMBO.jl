@@ -37,16 +37,24 @@ function main(io=stdout)
     )
     for (name, algorithm) in configurations
         estimate = median(trials[name])
+        objective_calls = Ref(0)
+        counted_rosenbrock = function (point)
+            objective_calls[] += 1
+            return rosenbrock(point)
+        end
+        counted_problem = Problem(counted_rosenbrock, problem.space)
         result = solve(
-            problem,
+            counted_problem,
             algorithm;
             maximum_evaluations=BUDGET,
             rng=MersenneTwister(SEED),
         )
+        objective_calls[] == evaluation_count(result) ||
+            error("reported objective-call count does not match the solver trace")
         println(
             io,
             VERSION, ',', name, ',', estimate.time / 1e6, ',', estimate.memory, ',',
-            estimate.allocs, ',', minimum(result), ',', evaluation_count(result), ',',
+            estimate.allocs, ',', minimum(result), ',', objective_calls[], ',',
             BUDGET, ',', SAMPLES, ',', SEED,
         )
     end

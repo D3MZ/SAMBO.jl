@@ -1,7 +1,21 @@
 using Random
 using SAMBO
 
-const DEFAULT_SEEDS = 1:5
+const DEFAULT_TRIALS = 1:5
+const SOURCE_COMMIT = if haskey(ENV, "GITHUB_SHA")
+    ENV["GITHUB_SHA"]
+else
+    try
+        root = normpath(joinpath(@__DIR__, ".."))
+        commit = readchomp(`git -C $root rev-parse HEAD`)
+        dirty = !isempty(readchomp(
+            `git -C $root status --porcelain --untracked-files=normal`,
+        ))
+        dirty ? "$commit-dirty" : commit
+    catch
+        "unknown"
+    end
+end
 
 const ROTATION = [
     -0.6593804733957869 0.40611875581020845 0.16266300278010432 0.5752843417117289 0.20705946293608232
@@ -14,6 +28,7 @@ const SHIFT = [0.35, -0.55, 0.8, -0.25, 0.6]
 const HARTMANN6_MINIMIZER =
     [0.20169, 0.150011, 0.476874, 0.275332, 0.311652, 0.6573]
 
+# These are nonseparable rotated-box robustness cases, not box-invariance tests.
 function hartmann6(x)
     alpha = (1.0, 1.2, 3.0, 3.2)
     A = (
@@ -57,18 +72,21 @@ const CASES = (
         problem=Problem(hartmann6, Box(zeros(6), ones(6))),
         optimum=-3.322368011415515,
         target=-2.8,
+        quality_target=-2.0,
     ),
     (
         name="rotated_rastrigin5",
         problem=Problem(rotated_rastrigin, Box(fill(-5.12, 5), fill(5.12, 5))),
         optimum=0.0,
         target=12.0,
+        quality_target=50.0,
     ),
     (
         name="rotated_rosenbrock5",
         problem=Problem(rotated_rosenbrock, Box(fill(-3.0, 5), fill(3.0, 5))),
         optimum=0.0,
         target=12.0,
+        quality_target=200.0,
     ),
 )
 
@@ -78,27 +96,90 @@ const ALGORITHMS = (
     ("SHGO", () -> SHGO(sampling_points=128), 1000),
 )
 
-function main(io=stdout; seeds=DEFAULT_SEEDS)
+function shared_initial_point(case, trial_id)
+    dimensions = SAMBO.dimension(case.problem.space)
+    latent = [
+        mod(trial_id * (2axis + 1), 17) / 17
+        for axis in 1:dimensions
+    ]
+    return decode(case.problem.space, latent)
+end
+
+initial_design_hash(case, trial_id) =
+    "shared-design-v1:$(case.name):$trial_id"
+
+shared_design_capability(algorithm_name) =
+    algorithm_name == "SMBO" ?
+    "injected-x0-y0" : "not-supported-cross-runtime"
+
+normalized_gap(value, optimum) =
+    max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
+
+function main(io=stdout; trials=DEFAULT_TRIALS)
     abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6 ||
         error("Hartmann-6 reference minimum is inconsistent")
     rotated_rastrigin(SHIFT) == 0 ||
         error("rotated Rastrigin reference minimum is inconsistent")
     rotated_rosenbrock(SHIFT) == 0 ||
         error("rotated Rosenbrock reference minimum is inconsistent")
-    println(io, "runtime,problem,algorithm,seed,budget,evaluations,minimum,optimum,target,success")
-    for case in CASES, (algorithm_name, make_algorithm, budget) in ALGORITHMS, seed in seeds
-        result = solve(
-            case.problem,
-            make_algorithm();
-            maximum_evaluations=budget,
-            rng=Xoshiro(seed),
-        )
-        value = minimum(result)
-        println(
-            io,
-            "Julia,$(case.name),$algorithm_name,$seed,$budget,$(evaluation_count(result)),",
-            "$value,$(case.optimum),$(case.target),$(value <= case.target)",
-        )
+    println(
+        io,
+        "runtime,runtime_version,source_commit,python_sambo_version,problem,algorithm,",
+        "trial_id,configuration_hash,initial_design_hash,initial_design_capability,",
+        "budget,evaluation,evaluations,iteration,best_value,normalized_gap,",
+        "minimum,optimum,target,quality_target,required_hit_rate,",
+        "noninferiority_margin,feasible,duplicate,retcode,success",
+    )
+    for case in CASES,
+            (algorithm_name, make_algorithm, budget) in ALGORITHMS,
+            trial_id in trials
+        design_capability = shared_design_capability(algorithm_name)
+        supports_shared_design = design_capability == "injected-x0-y0"
+        result = if supports_shared_design
+            initial_point = shared_initial_point(case, trial_id)
+            initial_value = case.problem.objective(initial_point)
+            solve(
+                case.problem,
+                make_algorithm();
+                initial_points=[initial_point],
+                initial_values=[initial_value],
+                maximum_evaluations=budget,
+                rng=Xoshiro(trial_id),
+            )
+        else
+            solve(
+                case.problem,
+                make_algorithm();
+                maximum_evaluations=budget,
+                rng=Xoshiro(trial_id),
+            )
+        end
+        configuration_hash = "native-default-v1:$algorithm_name:$budget"
+        design_hash = supports_shared_design ?
+            initial_design_hash(case, trial_id) : "none"
+        best = Inf
+        seen = Set{Tuple}()
+        for index in 1:result.trace.count
+            result.trace.source[index] == KnownObservation && continue
+            evaluation = result.trace.evaluation_numbers[index]
+            value = result.trace.objective_values[index]
+            best = min(best, value)
+            latent = @view result.trace.latent_points[:, index]
+            key = Tuple(latent)
+            duplicate = key in seen
+            push!(seen, key)
+            result_code =
+                evaluation == evaluation_count(result) ? retcode(result) : :running
+            println(
+                io,
+                "Julia,$VERSION,$SOURCE_COMMIT,n/a,$(case.name),$algorithm_name,",
+                "$trial_id,$configuration_hash,$design_hash,$design_capability,$budget,",
+                "$evaluation,$evaluation,$(result.trace.iterations[index]),$best,",
+                "$(normalized_gap(best, case.optimum)),$best,$(case.optimum),",
+                "$(case.target),$(case.quality_target),0.8,0.25,true,$duplicate,",
+                "$result_code,$(best <= case.target)",
+            )
+        end
     end
 end
 

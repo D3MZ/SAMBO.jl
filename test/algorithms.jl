@@ -37,7 +37,10 @@ end
     for algorithm in (
         SCEUA(),
         SMBO(candidate_pool=32),
-        TopologicalMultistart(samples=6),
+        TopologicalMultistart(
+            samples=6,
+            topology=KNearestTopology(neighbors=2),
+        ),
     )
         typed = solve(
             Problem(x -> sum(abs2, x), Box(BigFloat[-1, -1], BigFloat[1, 1])),

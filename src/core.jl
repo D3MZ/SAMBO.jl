@@ -155,6 +155,9 @@ struct Result{P,S,X,T,TR,M,A,O,ST}
 end
 minimizer(r::Result) = r.minimizer
 minimum(r::Result) = r.minimum
+bestpoint(r::Result) = r.minimizer
+bestvalue(r::Result) = r.minimum
+optimizationsense(r::Result) = r.sense
 trace(r::Result) = r.trace
 retcode(r::Result) = r.retcode
 evaluation_count(r::Result) = get(r.statistics, :evaluations, r.trace.count)
@@ -163,13 +166,6 @@ fittedmodel(r::Result) = r.model
 argbest(result::Result) =
     argbest(result.sense, objectivevalues(trace(result)))
 
-struct ProgressEvent{T,X}
-    evaluation::Int
-    iteration::Int
-    latest_value::T
-    best_value::T
-    latest_point::X
-end
 struct BatchProgressEvent{T,X}
     evaluation::Int
     iteration::Int

@@ -37,8 +37,8 @@ result = minimize(
         (x.channel == :search ? 0 : 10)
 end
 
-minimum(result)
-minimizer(result)
+bestvalue(result)
+bestpoint(result)
 observations(result)
 ```
 
@@ -169,15 +169,18 @@ ecosystem integrations and workflow APIs.
 
 ### Rosenbrock microbenchmarks
 
-This compares warm-run execution time for equivalent seeded Rosenbrock workloads.
+This compares the native default end-to-end workload in each runtime under the
+same objective, budget, and trial identifier.
 
 <sub>Apple M1 Max; median warm-run time over 40 seeded Rosenbrock evaluations using Julia 1.12.6 and Python 3.14.6 with Python SAMBO 1.25.2.</sub>
 
+<!-- benchmark-table:start -->
 | Algorithm | Julia | Python | Improvement |
 |---|---:|---:|---:|
-| SCE-UA | 0.0240 ms | 1.420 ms | 59.1× faster |
-| SMBO | 13.831 ms | 622.658 ms | 45.0× faster |
-| SHGO | 0.0399 ms | 1.666 ms | 41.7× faster |
+| SCE-UA | 0.0221 ms | 1.433 ms | 64.8× faster |
+| SMBO | 12.722 ms | 681.298 ms | 53.6× faster |
+| SHGO | 0.0403 ms | 1.821 ms | 45.2× faster |
+<!-- benchmark-table:end -->
 
 Run the benchmark:
 
@@ -186,34 +189,48 @@ julia --project=benchmark benchmark/benchmarks.jl
 python3 benchmark/python_reference.py
 ```
 
+Replace the saved files in `benchmark/results/` and run
+`python3 benchmark/update_readme.py` to regenerate the checked-in table.
+
 ### Cross-runtime solution-quality checks
 
 This checks whether the Julia and Python implementations reach comparable solutions on difficult problems.
 
-Identical objective formulas and bounds were tested over five independent seeds.
+Identical objective formulas and bounds were tested over five independent trial
+identifiers; the runtimes use their native RNG implementations.
 SCE-UA and SHGO received 1,000 evaluations and SMBO received 300. The rotated, shifted
-five-dimensional cases are multimodal or ill-conditioned; targets were fixed in
-the scripts before running the matrix.
+five-dimensional cases test multimodality, conditioning, and nonseparability
+robustness rather than rotation invariance of an axis-aligned box. Targets were
+fixed in the scripts before running the matrix.
 
-<sub>Each cell: median final objective; target hits across five seeded runs. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
+The scheduled gate separately requires at least four of five trials to reach
+practical quality thresholds of −2.0, 50, and 200 for Hartmann-6, Rastrigin-5,
+and Rosenbrock-5, then applies a 0.25-decade paired non-inferiority margin above
+those thresholds.
 
+<sub>Each cell: median final objective; target hits across five trials. Julia 1.12.6; Python 3.14.6 with SAMBO 1.25.2.</sub>
+
+<!-- correctness-table:start -->
 | Algorithm | Problem (known optimum; target) | Julia | Python |
 |---|---|---:|---:|
-| SCE-UA | Hartmann-6 (−3.322; ≤ −2.8) | −3.320; 5/5 | −3.276; 5/5 |
-| SCE-UA | Rotated Rastrigin-5 (0; ≤ 12) | 8.125; 5/5 | 17.258; 0/5 |
+| SCE-UA | Hartmann-6 (−3.322; ≤ −2.8) | −3.32; 5/5 | −3.276; 5/5 |
+| SCE-UA | Rotated Rastrigin-5 (0; ≤ 12) | 9.882; 3/5 | 17.258; 0/5 |
 | SCE-UA | Rotated Rosenbrock-5 (0; ≤ 12) | 2.598; 5/5 | 12.298; 2/5 |
-| SMBO | Hartmann-6 (−3.322; ≤ −2.8) | −3.304; 5/5 | −2.635; 2/5 |
-| SMBO | Rotated Rastrigin-5 (0; ≤ 12) | 12.159; 2/5 | 35.577; 0/5 |
-| SMBO | Rotated Rosenbrock-5 (0; ≤ 12) | 121.815; 0/5 | 88.992; 0/5 |
-| SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −2.647; 2/5 | −3.322; 5/5 |
-| SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 19.054; 0/5 | 2.985; 5/5 |
-| SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 53.988; 1/5 | 4.28e−9; 5/5 |
+| SMBO | Hartmann-6 (−3.322; ≤ −2.8) | −3.262; 5/5 | −2.426; 2/5 |
+| SMBO | Rotated Rastrigin-5 (0; ≤ 12) | 8.568; 4/5 | 36.074; 0/5 |
+| SMBO | Rotated Rosenbrock-5 (0; ≤ 12) | 44.823; 0/5 | 99.929; 0/5 |
+| SHGO | Hartmann-6 (−3.322; ≤ −2.8) | −3.261; 5/5 | −3.322; 5/5 |
+| SHGO | Rotated Rastrigin-5 (0; ≤ 12) | 14.264; 2/5 | 2.985; 5/5 |
+| SHGO | Rotated Rosenbrock-5 (0; ≤ 12) | 6.011; 5/5 | 4.28e−09; 5/5 |
+<!-- correctness-table:end -->
 
 Reproduce the matrix:
 
 ```sh
-julia --project=. benchmark/correctness_julia.jl
-python3 benchmark/correctness_python.py
+julia --project=. benchmark/correctness_julia.jl > julia-correctness.csv
+python3 benchmark/correctness_python.py > python-correctness.csv
+python3 benchmark/compare_correctness.py julia-correctness.csv python-correctness.csv
+python3 benchmark/update_correctness_readme.py README.md julia-correctness.csv python-correctness.csv
 ```
 
 ## License

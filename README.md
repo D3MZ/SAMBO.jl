@@ -169,9 +169,6 @@ ecosystem integrations and workflow APIs.
 
 ### Rosenbrock microbenchmarks
 
-This compares the native default end-to-end workload in each runtime under the
-same objective, budget, and trial identifier.
-
 <sub>Apple M1 Max; median warm-run time over 40 seeded Rosenbrock evaluations using Julia 1.12.6 and Python 3.14.6 with Python SAMBO 1.25.2.</sub>
 
 <!-- benchmark-table:start -->
@@ -194,32 +191,26 @@ Replace the saved files in `benchmark/results/` and run
 
 ### Cross-runtime solution-quality checks
 
-<sub>Each runtime column shows the median final objective across ten native
-trials from the latest passing matrix.</sub>
+<sub>Runtime values are median final objectives across ten native trials.
+Difference is Julia's reduction in absolute optimality gap relative to Python.</sub>
 
-| Algorithm | Problem (known optimum) | Julia median | Python median |
-|---|---|---:|---:|
-| SCE-UA | Hartmann-6 (−3.322) | −3.320 | −3.268 |
-| SCE-UA | Rotated Rastrigin-5 (0) | 10.266 | 18.402 |
-| SCE-UA | Rotated Rosenbrock-5 (0) | 2.726 | 4.914 |
-| SMBO | Hartmann-6 (−3.322) | −3.292 | −2.330 |
-| SMBO | Rotated Rastrigin-5 (0) | 10.057 | 29.802 |
-| SMBO | Rotated Rosenbrock-5 (0) | 50.758 | 88.289 |
-| SHGO | Hartmann-6 (−3.322) | −3.322 | −3.322 |
-| SHGO | Rotated Rastrigin-5 (0) | 13.432 | 13.929 |
-| SHGO | Rotated Rosenbrock-5 (0) | 1.56e−08 | 6.24e−08 |
+| Algorithm | Problem | Julia (median) | Python (median) | Difference % | Optimal |
+|---|---|---:|---:|---:|---:|
+| SCE-UA | Hartmann-6 | −3.320 | −3.268 | 96.3% | −3.322 |
+| SCE-UA | Rotated Rastrigin-5 | 10.266 | 18.402 | 44.2% | 0 |
+| SCE-UA | Rotated Rosenbrock-5 | 2.726 | 4.914 | 44.5% | 0 |
+| SMBO | Hartmann-6 | −3.292 | −2.330 | 97.0% | −3.322 |
+| SMBO | Rotated Rastrigin-5 | 10.057 | 29.802 | 66.3% | 0 |
+| SMBO | Rotated Rosenbrock-5 | 50.758 | 88.289 | 42.5% | 0 |
+| SHGO | Hartmann-6 | −3.322 | −3.322 | — | −3.322 |
+| SHGO | Rotated Rastrigin-5 | 13.432 | 13.929 | 3.6% | 0 |
+| SHGO | Rotated Rosenbrock-5 | 1.56e−08 | 6.24e−08 | 75.0% | 0 |
 
-The scheduled check tests whether each native Julia solver is non-inferior to
-the corresponding Python solver on Hartmann-6 and rotated five-dimensional
-Rastrigin and Rosenbrock problems. Both runtimes use the same objective formulas,
-bounds, maximum evaluation budgets, and ten trial identifiers. The rotated
-cases test conditioning and nonseparability. Python SHGO uses seeded Halton
-sampling so its trials are independent realizations.
-
-For each solver/problem group, the comparator independently bootstraps the
-median normalized log-regret in each runtime. The one-sided 95% upper bound on
-Julia minus Python must not exceed 0.25 decades. This is the only quality gate;
-there are no target-hit or absolute-threshold checks.
+- Tests native Julia against Python on Hartmann-6 and rotated five-dimensional
+  Rastrigin and Rosenbrock using matched objectives, bounds, budgets, and ten
+  trial identifiers.
+- Julia passes when the bootstrapped one-sided 95% upper bound on its median
+  normalized log-regret difference is at most 0.25 decades.
 
 Reproduce the check:
 

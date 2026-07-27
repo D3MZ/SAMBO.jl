@@ -1,4 +1,9 @@
 struct UniformCandidates end
+struct AdaptiveDensityCandidates end
+
+_silverman_bandwidth(weights, dimensions) =
+    (inv(sum(abs2, weights)) * (dimensions + 2) / 4)^
+    (-inv(dimensions + 4))
 struct AvoidRepeatedEvaluations end
 struct AllowRepeatedEvaluations end
 struct CandidateGenerationError <: Exception
@@ -87,7 +92,7 @@ refit_interval(schedule::FixedRefit, observations) = schedule.interval
 refit_interval(schedule::SquareRootRefit, observations) =
     max(schedule.minimum_interval, isqrt(observations))
 
-struct SMBO{S,A,I,C,F,R,B,E}
+struct SMBO{S,A,I,C,F,R,B,E,T<:Real}
     surrogate::S
     acquisition::A
     initial_design::I
@@ -100,23 +105,33 @@ struct SMBO{S,A,I,C,F,R,B,E}
     repeat_policy::R
     batch_strategy::B
     candidate_equality::E
+    improvement_tolerance::T
+    no_change_iterations::Int
 end
 function SMBO(;
-    surrogate=GaussianProcessSurrogate(),
-    acquisition=LowerConfidenceBound(),
+    surrogate=GaussianProcessSurrogate(
+        length_scale=AutomaticARDLengthScale(),
+        noise=1e-14,
+        jitter=NoJitter(),
+        kernel=SquaredExponentialKernel(),
+        optimize_hyperparameters=true,
+    ),
+    acquisition=RandomizedLowerConfidenceBound(),
     initial_design=LatinHypercubeDesign(),
-    candidate_sampler=GlobalLocalCandidates(),
+    candidate_sampler=AdaptiveDensityCandidates(),
     initial_points=0,
-    candidate_pool=4096,
+    candidate_pool=80_000,
     batch_size=1,
     refit_interval=1,
     refit_schedule=nothing,
     prediction_chunk_size=4096,
-    adaptive_refit=true,
+    adaptive_refit=false,
     repeat_policy=AvoidRepeatedEvaluations(),
     batch_strategy=LocalPenalization(),
     candidate_equality=ExactCandidateEquality(),
     exploration=nothing,
+    improvement_tolerance=1e-6,
+    no_change_iterations=5,
 )
     if !isnothing(exploration)
         acquisition = LowerConfidenceBound(exploration)
@@ -127,6 +142,10 @@ function SMBO(;
     refit_interval > 0 || throw(ArgumentError("refit_interval must be positive"))
     prediction_chunk_size > 0 ||
         throw(ArgumentError("prediction_chunk_size must be positive"))
+    isfinite(improvement_tolerance) && improvement_tolerance >= 0 ||
+        throw(ArgumentError("improvement tolerance must be finite and nonnegative"))
+    no_change_iterations > 0 ||
+        throw(ArgumentError("no-change iterations must be positive"))
     schedule = isnothing(refit_schedule) ?
         (adaptive_refit ? SquareRootRefit(refit_interval) :
             FixedRefit(refit_interval)) : refit_schedule
@@ -143,6 +162,8 @@ function SMBO(;
         repeat_policy,
         batch_strategy,
         candidate_equality,
+        improvement_tolerance,
+        no_change_iterations,
     )
 end
 
@@ -258,7 +279,10 @@ function init(problem::Problem, algorithm::SMBO; initial_points=nothing, initial
     T = eltype(core.trace.latent_points)
     TY = eltype(core.trace.objective_values)
     d = dimension(problem.space)
-    initial_count = algorithm.initial_points == 0 ? max(2d + 1, 5) :
+    initial_count = algorithm.initial_points == 0 ? min(
+        max(1, core.criteria.maximum_evaluations - 20),
+        floor(Int, 40d * max(1, log2(d))),
+    ) :
         algorithm.initial_points
     design_count = min(
         max(0, initial_count - core.trace.count),
@@ -383,6 +407,58 @@ function generate_candidates!(
         state.core.problem,
     )
     return size(destination, 2)
+end
+
+function generate_candidates!(
+    candidates,
+    state::SMBOState,
+    sampler::AdaptiveDensityCandidates,
+)
+    d = dimension(state.core.problem.space)
+    if state.core.trace.count < 10d^2
+        return generate_candidates!(candidates, state, UniformCandidates())
+    end
+    trace = state.core.trace
+    count = trace.count
+    points = @view trace.latent_points[:, 1:count]
+    losses = _loss.(Ref(state.core.problem.sense), objectivevalues(trace))
+    weights = maximum(losses) .- losses
+    if !(sum(weights) > 0)
+        return generate_candidates!(candidates, state, UniformCandidates())
+    end
+    weights ./= sum(weights)
+    weights .^= 3
+    weights ./= sum(weights)
+    mean_point = points * weights
+    covariance = zeros(eltype(points), d, d)
+    for column in 1:count
+        delta = @view(points[:, column]) .- mean_point
+        covariance .+= weights[column] .* (delta * delta')
+    end
+    squared_weight_sum = sum(abs2, weights)
+    bandwidth = _silverman_bandwidth(weights, d)
+    covariance ./= 1 - squared_weight_sum
+    factor = cholesky(
+        Symmetric(covariance + eps(eltype(covariance)) * I);
+        check=false,
+    )
+    isposdef(factor) ||
+        return generate_candidates!(candidates, state, UniformCandidates())
+    cumulative = cumsum(weights)
+    written = 0
+    attempts = 0
+    while written < size(candidates, 2) && attempts < 1_000size(candidates, 2)
+        attempts += 1
+        center = searchsortedfirst(cumulative, Random.rand(state.core.rng))
+        proposal = @view candidates[:, written + 1]
+        proposal .= @view(points[:, center]) .+
+            bandwidth .* (factor.L * Random.randn(state.core.rng, d))
+        all(0 .<= proposal .<= 1) || continue
+        isfeasible(state.core.problem, decode(state.core.problem.space, proposal)) ||
+            continue
+        written += 1
+    end
+    return written
 end
 
 function generate_candidates!(
@@ -828,16 +904,23 @@ function _select_candidates(state::SMBOState, candidates, requested)
     means = workspace.means
     variances = workspace.variances
     scores = workspace.scores
+    acquisition = state.algorithm.acquisition
+    if acquisition isa RandomizedLowerConfidenceBound
+        coefficient = acquisition.lower +
+            Random.rand(state.core.rng) *
+            (acquisition.upper - acquisition.lower)
+        acquisition = LowerConfidenceBound(coefficient)
+    end
     _predict_candidates!(
         state,
         means,
         variances,
         candidates,
-        state.algorithm.acquisition,
+        acquisition,
     )
     acquisitionvalues!(
         scores,
-        state.algorithm.acquisition,
+        acquisition,
         means,
         variances,
         _loss(state.core.problem, state.core.best_value),
@@ -921,7 +1004,7 @@ function ask!(state::SMBOState, requested::Integer=state.algorithm.batch_size)
                 _sample_feasible(
                     state.core,
                     count - design_count,
-                    state.algorithm.initial_design,
+                    UniformDesign(),
                 ),
             )
         end
@@ -1135,8 +1218,25 @@ function solve!(state::SMBOState)
     isnothing(state.core.problem.objective) &&
         throw(ArgumentError("solve! requires an objective; use ask!/tell!"))
     try
+        previous_best = eltype(state.core.trace.objective_values)(Inf)
+        no_change = 0
         while !_finished(state.core)
+            guided = state.initial_design_cursor > size(state.initial_design, 2)
             step!(state)
+            if guided && !_finished(state.core)
+                best = _loss(state.core.problem, state.core.best_value)
+                if previous_best == best ||
+                        previous_best - best <
+                        state.algorithm.improvement_tolerance
+                    no_change += 1
+                    if no_change == state.algorithm.no_change_iterations
+                        state.core.retcode = :stalled
+                    end
+                else
+                    previous_best = best
+                    no_change = 0
+                end
+            end
         end
         _fit_smbo!(state; force=true)
     catch error

@@ -191,26 +191,27 @@ Replace the saved files in `benchmark/results/` and run
 
 ### Cross-runtime solution-quality checks
 
-<sub>Runtime values are median final objectives across ten native trials.
-Difference is Julia's reduction in absolute optimality gap relative to Python.</sub>
+<sub>Scores are median final objectives across ten trials and six deterministic
+rotations. Within threshold counts rotations where Julia's median log regret is
+no more than 0.25 decades worse than Python's.</sub>
 
-| Algorithm | Problem | Julia (median) | Python (median) | Difference % | Optimal |
+| Algorithm | Problem | Known optimum | Julia median | Python median | Within threshold |
 |---|---|---:|---:|---:|---:|
-| SCE-UA | Hartmann-6 | −3.320 | −3.268 | 96.3% | −3.322 |
-| SCE-UA | Rotated Rastrigin-5 | 10.266 | 18.402 | 44.2% | 0 |
-| SCE-UA | Rotated Rosenbrock-5 | 2.726 | 4.914 | 44.5% | 0 |
-| SMBO | Hartmann-6 | −3.292 | −2.330 | 97.0% | −3.322 |
-| SMBO | Rotated Rastrigin-5 | 10.057 | 29.802 | 66.3% | 0 |
-| SMBO | Rotated Rosenbrock-5 | 50.758 | 88.289 | 42.5% | 0 |
-| SHGO | Hartmann-6 | −3.322 | −3.322 | — | −3.322 |
-| SHGO | Rotated Rastrigin-5 | 13.432 | 13.929 | 3.6% | 0 |
-| SHGO | Rotated Rosenbrock-5 | 1.56e−08 | 6.24e−08 | 75.0% | 0 |
+| SCE-UA | Hartmann-6 | −3.322368 | −3.25922 | −3.22225 | 6/6 |
+| SCE-UA | Rotated Rastrigin-5 | 0 | 15.3486 | 16.3481 | 6/6 |
+| SCE-UA | Rotated Rosenbrock-5 | 0 | 4.98709 | 5.01705 | 6/6 |
+| SMBO | Hartmann-6 | −3.322368 | −2.3484 | −2.08296 | 6/6 |
+| SMBO | Rotated Rastrigin-5 | 0 | 36.0142 | 34.7514 | 6/6 |
+| SMBO | Rotated Rosenbrock-5 | 0 | 206.035 | 266.205 | 6/6 |
+| SHGO | Hartmann-6 | −3.322368 | −3.32237 | −3.32237 | 6/6 |
+| SHGO | Rotated Rastrigin-5 | 0 | 12.9344 | 17.9092 | 6/6 |
+| SHGO | Rotated Rosenbrock-5 | 0 | 1.09796e−09 | 5.47839e−08 | 6/6 |
 
-- Tests native Julia against Python on Hartmann-6 and rotated five-dimensional
-  Rastrigin and Rosenbrock using matched objectives, bounds, budgets, and ten
-  trial identifiers.
-- Julia passes when the bootstrapped one-sided 95% upper bound on its median
-  normalized log-regret difference is at most 0.25 decades.
+- Uses matched algorithm settings, objectives, bounds, evaluation budgets, trial
+  identifiers, and six deterministic nonseparable rotations in both runtimes.
+- SCE-UA and SMBO receive the same counted Latin-hypercube designs; SHGO
+  receives the same shifted Halton stream.
+- Each row passes only when Julia is within the threshold on all six rotations.
 
 Reproduce the check:
 

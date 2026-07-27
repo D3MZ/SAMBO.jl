@@ -1,4 +1,6 @@
 struct DelaunayTopology end
+"""Qhull policy used by SciPy's incremental Delaunay construction in SHGO."""
+struct PythonIncrementalDelaunayTopology end
 struct KNearestTopology
     neighbors::Int
 end
@@ -87,10 +89,48 @@ end
 
 struct NeighborComplex
     adjacency::Vector{Vector{Int}}
+    vertex_order::Vector{Int}
 end
+NeighborComplex(adjacency::Vector{Vector{Int}}) =
+    NeighborComplex(adjacency, collect(eachindex(adjacency)))
 neighbors(complex::NeighborComplex, vertex) = complex.adjacency[vertex]
 
-function buildcomplex(points, ::DelaunayTopology)
+function _connect_delaunay_simplex!(
+    adjacency,
+    simplex,
+    count;
+    scipy_shgo_adjacency=false,
+    vertex_order=nothing,
+    inserted=nothing,
+)
+    if scipy_shgo_adjacency
+        isnothing(vertex_order) && (vertex_order = Int[])
+        isnothing(inserted) && (inserted = falses(count))
+    end
+    vertices = scipy_shgo_adjacency ?
+        @view(simplex[1:min(3, length(simplex))]) :
+        simplex
+    for left in eachindex(vertices), right in left+1:length(vertices)
+        a = Int(vertices[left])
+        b = Int(vertices[right])
+        (1 <= a <= count && 1 <= b <= count) || continue
+        if scipy_shgo_adjacency
+            if !inserted[a]
+                push!(vertex_order, a)
+                inserted[a] = true
+            end
+            if !inserted[b]
+                push!(vertex_order, b)
+                inserted[b] = true
+            end
+        end
+        push!(adjacency[a], b)
+        push!(adjacency[b], a)
+    end
+    return adjacency
+end
+
+function _delaunay_complex(points, options; scipy_shgo_adjacency=false)
     eltype(points) <: Union{Float32,Float64} || throw(ArgumentError(
         "Delaunay topology supports Float32 and Float64 coordinates",
     ))
@@ -116,7 +156,7 @@ function buildcomplex(points, ::DelaunayTopology)
         "Delaunay construction requires a full-dimensional point cloud",
     ))
     simplices = try
-        MiniQhull.delaunay(points, "qhull d Qt Qbb Qc Qz QJ Pp")
+        MiniQhull.delaunay(points, options)
     catch error
         error isa ErrorException || rethrow()
         throw(ComplexConstructionError(
@@ -124,19 +164,38 @@ function buildcomplex(points, ::DelaunayTopology)
         ))
     end
     adjacency = [Int[] for _ in 1:count]
-    for simplex in eachcol(simplices), left in eachindex(simplex), right in left+1:length(simplex)
-        a = Int(simplex[left])
-        b = Int(simplex[right])
-        (1 <= a <= count && 1 <= b <= count) || continue
-        push!(adjacency[a], b)
-        push!(adjacency[b], a)
+    vertex_order = Int[]
+    inserted = falses(count)
+    for simplex in eachcol(simplices)
+        _connect_delaunay_simplex!(
+            adjacency,
+            simplex,
+            count;
+            scipy_shgo_adjacency,
+            vertex_order,
+            inserted,
+        )
     end
     foreach(unique!, adjacency)
-    all(list -> !isempty(list), adjacency) || throw(ComplexConstructionError(
-        "Delaunay construction produced isolated vertices",
-    ))
-    return NeighborComplex(adjacency)
+    if !scipy_shgo_adjacency
+        all(list -> !isempty(list), adjacency) ||
+            throw(ComplexConstructionError(
+                "Delaunay construction produced isolated vertices",
+            ))
+    end
+    return NeighborComplex(
+        adjacency,
+        scipy_shgo_adjacency ? vertex_order : collect(1:count),
+    )
 end
+buildcomplex(points, ::DelaunayTopology) =
+    _delaunay_complex(points, "qhull d Qt Qbb Qc Qz QJ Pp")
+buildcomplex(points, ::PythonIncrementalDelaunayTopology) =
+    _delaunay_complex(
+        points,
+        "qhull d Qt Qc Qx Q11";
+        scipy_shgo_adjacency=true,
+    )
 
 function buildcomplex(points, topology::KNearestTopology)
     _, count = size(points)
@@ -165,7 +224,7 @@ end
 
 function localcandidates(complex::NeighborComplex, values)
     candidates = Int[]
-    for vertex in eachindex(values)
+    for vertex in complex.vertex_order
         all(neighbor -> values[vertex] <= values[neighbor], neighbors(complex, vertex)) &&
             push!(candidates, vertex)
     end
@@ -414,10 +473,19 @@ struct FixedShiftDesign{S,V}
     design::S
     shift::V
 end
+advance(design::FixedShiftDesign, count) =
+    FixedShiftDesign(advance(design.design, count), design.shift)
+struct FixedScrambledHaltonDesign
+    skip::Int
+    seed::UInt64
+end
 struct GlobalBoxLocalBounds end
 struct TopographicalLocalBounds end
+struct BestLocalStarts end
+struct FarthestFromLatestMinimum end
+struct PythonSAMBOProfile end
 
-struct SHGO{S,T,L,M,B}
+struct SHGO{S,T,L,M,B,P}
     sampling::S
     topology::T
     local_solver::L
@@ -428,6 +496,11 @@ struct SHGO{S,T,L,M,B}
     homology_patience::Int
     minimization_schedule::M
     local_bounds::B
+    local_start_policy::P
+    minimum_local_reserve::Int
+    divide_automatic_local_budget::Bool
+    convergence_tolerance::Float64
+    convergence_window::Int
 end
 function SHGO(;
     sampling=RandomShiftedSampling(SobolDesign()),
@@ -441,6 +514,11 @@ function SHGO(;
     minimize_every_iteration=true,
     minimization_schedule=nothing,
     local_bounds=GlobalBoxLocalBounds(),
+    local_start_policy=BestLocalStarts(),
+    minimum_local_reserve=-1,
+    divide_automatic_local_budget=true,
+    convergence_tolerance=0.0,
+    convergence_window=0,
 )
     sampling_points >= 0 ||
         throw(ArgumentError("sampling_points must be nonnegative"))
@@ -450,6 +528,16 @@ function SHGO(;
         throw(ArgumentError("minimum_homology_growth must be nonnegative"))
     homology_patience > 0 ||
         throw(ArgumentError("homology_patience must be positive"))
+    minimum_local_reserve >= -1 ||
+        throw(ArgumentError("minimum_local_reserve must be at least -1"))
+    isfinite(convergence_tolerance) && convergence_tolerance >= 0 ||
+        throw(ArgumentError("convergence_tolerance must be finite and nonnegative"))
+    convergence_window >= 0 ||
+        throw(ArgumentError("convergence_window must be nonnegative"))
+    iszero(convergence_window) == iszero(convergence_tolerance) ||
+        throw(ArgumentError(
+            "convergence_tolerance and convergence_window must both be zero or positive",
+        ))
     schedule = isnothing(minimization_schedule) ?
         (minimize_every_iteration ? MinimizeEveryRefinement() :
             MinimizeAtTermination()) : minimization_schedule
@@ -464,7 +552,49 @@ function SHGO(;
         homology_patience,
         schedule,
         local_bounds,
+        local_start_policy,
+        minimum_local_reserve,
+        divide_automatic_local_budget,
+        Float64(convergence_tolerance),
+        convergence_window,
     )
+end
+
+"""
+Configuration matching the effective SHGO policy used by Python SAMBO 1.25.2.
+
+It uses a seeded Owen-style digit scramble of a Halton design, 80 samples per refinement,
+four local starts, immediate zero-growth homology stopping, and the Python
+wrapper's 30-value/`1e-6` convergence check. The local solver is the closest
+native bounded quasi-Newton analogue to SciPy's finite-difference SLSQP call.
+
+This profile does not make the implementations identical: Julia's local search
+remains the native BFGS/Armijo quasi-Newton routine, while Python calls SciPy
+SLSQP, whose line search and compound stopping tests are not public extension
+points here. The digit permutations also come from Julia's seeded Xoshiro
+stream rather than NumPy's PCG64 stream, so equal integer seeds do not imply
+identical cross-runtime sample coordinates.
+"""
+function SHGO(::PythonSAMBOProfile; kwargs...)
+    defaults = (
+        sampling=ScrambledHaltonDesign(skip=0),
+        topology=PythonIncrementalDelaunayTopology(),
+        local_solver=QuasiNewtonSearch(
+            finite_difference_step=sqrt(eps(Float64)),
+            gradient_tolerance=1e-6,
+            minimum_step=1e-8,
+        ),
+        sampling_points=80,
+        local_starts=4,
+        local_start_policy=FarthestFromLatestMinimum(),
+        minimum_homology_growth=0,
+        homology_patience=1,
+        minimum_local_reserve=0,
+        divide_automatic_local_budget=false,
+        convergence_tolerance=1e-6,
+        convergence_window=30,
+    )
+    return SHGO(; merge(defaults, (; kwargs...))...)
 end
 
 minimize_candidates!(state, ::MinimizeEveryRefinement) =
@@ -492,7 +622,7 @@ mutable struct SHGOWorkspace{TX,TY}
     homology_rank_differential::Int
     stagnant_homology_iterations::Int
     initialized_observations::Int
-    sampling_shift::Vector{TX}
+    sampling_shift::Any
     local_center::Vector{TX}
     local_lower::Vector{TX}
     local_upper::Vector{TX}
@@ -565,6 +695,8 @@ function _sampling_shift(rng, ::RandomShiftedSampling, ::Type{T}, dimensions) wh
 end
 _sampling_shift(rng, sampling, ::Type{T}, dimensions) where {T} =
     zeros(T, dimensions)
+_sampling_shift(rng, design::ScrambledHaltonDesign, ::Type{T}, dimensions) where {T} =
+    rand(rng, UInt64) ⊻ design.seed
 
 function sample!(
     rng,
@@ -579,6 +711,16 @@ function sample!(
             one(eltype(destination)),
         )
     end
+    return _canonicalize_samples!(destination, space)
+end
+
+function sample!(
+    rng,
+    destination::AbstractMatrix,
+    design::FixedScrambledHaltonDesign,
+    space,
+)
+    _scrambled_halton!(destination, design.skip, design.seed)
     return _canonicalize_samples!(destination, space)
 end
 
@@ -650,6 +792,14 @@ function _shgo_sampling_design(
         state.workspace.sampling_shift,
     )
 end
+function _shgo_sampling_design(
+    state::SHGOState{C,<:SHGO{<:ScrambledHaltonDesign}},
+) where {C}
+    return FixedScrambledHaltonDesign(
+        state.algorithm.sampling.skip + state.workspace.sample_count,
+        state.workspace.sampling_shift,
+    )
+end
 
 function refine_sampling!(state::SHGOState)
     _initialize_shgo_observations!(state)
@@ -657,19 +807,63 @@ function refine_sampling!(state::SHGOState)
     remaining = _remaining(core)
     remaining == 0 && return state
     d = dimension(core.problem.space)
-    minimum_local_reserve = min(remaining - 1, max(32, 16d))
+    configured_reserve = state.algorithm.minimum_local_reserve
+    minimum_local_reserve = configured_reserve < 0 ?
+        min(remaining - 1, max(32, 16d)) :
+        min(remaining - 1, configured_reserve)
     requested = min(
         _sampling_points_per_refinement(state),
         remaining - minimum_local_reserve,
     )
     requested <= 0 && return state
     points = _sample_feasible(core, requested, _shgo_sampling_design(state))
-    values = _evaluate_batch(core, points)
+    values = Vector{eltype(core.trace.objective_values)}(undef, requested)
     core.iteration += 1
-    _commit_batch!(core, points, values)
-    _append_samples!(state.workspace, points, values)
+    evaluated = 0
+    if state.algorithm.convergence_window > 0
+        for column in axes(points, 2)
+            point = @view points[:, column:column]
+            value = @view values[column:column]
+            _evaluate_batch!(value, core, point)
+            _commit_batch!(core, point, value)
+            evaluated += 1
+            if _shgo_mark_value_spread_converged!(state)
+                break
+            end
+        end
+    else
+        _evaluate_batch!(values, core, points)
+        _commit_batch!(core, points, values)
+        evaluated = requested
+    end
+    evaluated > 0 && _append_samples!(
+        state.workspace,
+        @view(points[:, 1:evaluated]),
+        @view(values[1:evaluated]),
+    )
     state.workspace.refinements += 1
     return state
+end
+
+function _shgo_value_spread_converged(state::SHGOState)
+    window = state.algorithm.convergence_window
+    window > 0 || return false
+    trace = state.core.trace
+    losses = [
+        _loss(state.core.problem.sense, trace.objective_values[index])
+        for index in 1:trace.count
+        if trace.source[index] != KnownObservation
+    ]
+    length(losses) >= window || return false
+    best = partialsort!(losses, 1:window)
+    return best[end] - best[1] < state.algorithm.convergence_tolerance
+end
+
+function _shgo_mark_value_spread_converged!(state::SHGOState)
+    state.core.retcode == :running &&
+        _shgo_value_spread_converged(state) &&
+        (state.core.retcode = :success)
+    return state.core.retcode == :success
 end
 
 function update_complex!(state::SHGOState)
@@ -694,13 +888,38 @@ function local_minimum_candidates(state::SHGOState)
     filter!(candidates) do index
         !workspace.mapped_vertices[index]
     end
-    sort!(
-        candidates;
-        by=index -> _loss(state.core.problem, workspace.sample_values[index]),
-    )
+    _filter_topological_candidates!(candidates, state)
+    _order_local_candidates!(candidates, state)
     workspace.candidate_indices = candidates
     return candidates
 end
+
+_filter_topological_candidates!(candidates, state) = candidates
+function _filter_topological_candidates!(
+    candidates,
+    state::SHGOState{C,<:SHGO{S,<:PythonIncrementalDelaunayTopology}},
+) where {C,S}
+    filter!(
+        index -> !isempty(state.workspace.complex.adjacency[index]),
+        candidates,
+    )
+    return candidates
+end
+
+function _order_local_candidates!(candidates, state)
+    sort!(
+        candidates;
+        by=index -> _loss(
+            state.core.problem,
+            state.workspace.sample_values[index],
+        ),
+    )
+    return candidates
+end
+_order_local_candidates!(
+    candidates,
+    state::SHGOState{C,<:SHGO{S,<:PythonIncrementalDelaunayTopology}},
+) where {C,S} = candidates
 
 homology_rank(state::SHGOState) = state.workspace.homology_rank
 homology_rank_differential(state::SHGOState) =
@@ -849,7 +1068,15 @@ function _local_gradient!(
     deltas = workspace.local_center
     count = 0
     for axis in 1:d
-        h = max(TX(solver.finite_difference_step), sqrt(eps(TX)))
+        physical_step = max(
+            TX(solver.finite_difference_step),
+            sqrt(eps(TX)),
+        )
+        h = _latent_finite_difference_step(
+            core.problem.space,
+            axis,
+            physical_step,
+        )
         delta = center[axis] + h <= upper[axis] ? h : -h
         center[axis] + delta >= lower[axis] || return 0
         count += 1
@@ -864,15 +1091,26 @@ function _local_gradient!(
     _evaluate_batch!(values, core, @view(proposals[:, 1:count]))
     core.iteration += 1
     _commit_batch!(core, @view(proposals[:, 1:count]), values)
+    _shgo_mark_value_spread_converged!(state)
     center_loss = _loss(core.problem, value)
     for axis in 1:d
         gradient[axis] =
-            (_loss(core.problem, values[axis]) - center_loss) / deltas[axis]
+            (_loss(core.problem, values[axis]) - center_loss) /
+            (deltas[axis] * _local_coordinate_scale(core.problem.space, axis))
     end
     return count
 end
 
-function local_minimize!(
+_latent_finite_difference_step(space, axis, step) = step
+_local_coordinate_scale(space, axis) = one(latenttype(space))
+_local_coordinate_scale(space::Box, axis) =
+    space.upper[axis] - space.lower[axis]
+function _latent_finite_difference_step(space::Box, axis, step)
+    width = _local_coordinate_scale(space, axis)
+    return iszero(width) ? step : step / width
+end
+
+function _quasi_newton_minimize!(
     state::SHGOState,
     solver::QuasiNewtonSearch,
     start,
@@ -932,11 +1170,14 @@ function local_minimize!(
             proposal = @view state.workspace.local_candidates[:, 1]
             for axis in 1:d
                 proposal[axis] = clamp(
-                    center[axis] + step * direction[axis],
+                    center[axis] + step * direction[axis] /
+                        _local_coordinate_scale(core.problem.space, axis),
                     lower[axis],
                     upper[axis],
                 )
-                step_vector[axis] = proposal[axis] - center[axis]
+                step_vector[axis] =
+                    (proposal[axis] - center[axis]) *
+                    _local_coordinate_scale(core.problem.space, axis)
             end
             norm(step_vector, Inf) > eps(TX) || break
             _canonicalize!(proposal, core.problem.space)
@@ -954,6 +1195,9 @@ function local_minimize!(
             )
             used += 1
             trial_value = values[1]
+            if _shgo_mark_value_spread_converged!(state)
+                break
+            end
             trial_loss = _loss(core.problem, trial_value)
             if isfinite(trial_loss) &&
                     trial_loss <= center_loss +
@@ -963,10 +1207,27 @@ function local_minimize!(
             end
             step /= TX(2)
         end
+        if !accepted && !(inverse_hessian ≈ Matrix{TX}(I, d, d))
+            fill!(inverse_hessian, zero(TX))
+            for axis in 1:d
+                inverse_hessian[axis, axis] = one(TX)
+            end
+            continue
+        end
         accepted || break
 
-        center .+= step_vector
+        for axis in 1:d
+            center[axis] = clamp(
+                center[axis] + step_vector[axis] /
+                    _local_coordinate_scale(core.problem.space, axis),
+                lower[axis],
+                upper[axis],
+            )
+        end
+        improvement = center_loss - _loss(core.problem, trial_value)
         value = trial_value
+        improvement >= 0 &&
+            improvement < TX(solver.gradient_tolerance) && break
         used + gradient_cost <= budget &&
             gradient_cost <= _remaining(core) || break
         used += _local_gradient!(
@@ -1006,20 +1267,101 @@ function local_minimize!(
     return center, value
 end
 
+local_minimize!(
+    state::SHGOState,
+    solver::QuasiNewtonSearch,
+    start,
+    start_value,
+    lower,
+    upper,
+    budget,
+) = _quasi_newton_minimize!(
+    state,
+    solver,
+    start,
+    start_value,
+    lower,
+    upper,
+    budget,
+)
+
+function local_minimize!(
+    state::SHGOState{C,<:SHGO{S,<:PythonIncrementalDelaunayTopology}},
+    solver::QuasiNewtonSearch,
+    start,
+    start_value,
+    lower,
+    upper,
+    budget,
+) where {C,S}
+    budget <= 0 && return copy(start), start_value
+    core = state.core
+    candidate = reshape(copy(start), :, 1)
+    values = Vector{eltype(core.trace.objective_values)}(undef, 1)
+    _evaluate_batch!(values, core, candidate)
+    core.iteration += 1
+    _commit_batch!(core, candidate, values)
+    _shgo_mark_value_spread_converged!(state)
+    return _quasi_newton_minimize!(
+        state,
+        solver,
+        start,
+        values[1],
+        lower,
+        upper,
+        budget - 1,
+    )
+end
+
 function _same_minimum(left, right)
     tolerance = 32sqrt(eps(promote_type(eltype(left), eltype(right))))
     return all(abs(left[i] - right[i]) <= tolerance for i in eachindex(left, right))
 end
 
+_next_local_candidate!(candidates, state, ::BestLocalStarts, latest) =
+    popfirst!(candidates)
+function _next_local_candidate!(
+    candidates,
+    state,
+    ::FarthestFromLatestMinimum,
+    latest,
+)
+    isnothing(latest) && return popfirst!(candidates)
+    workspace = state.workspace
+    latest_decoded = decode(state.core.problem.space, latest)
+    farthest = firstindex(candidates)
+    farthest_distance = -Inf
+    for position in eachindex(candidates)
+        candidate = candidates[position]
+        point = @view workspace.sample_points[:, candidate]
+        decoded = decode(state.core.problem.space, point)
+        distance = sum(abs2(left - right) for (left, right) in zip(decoded, latest_decoded))
+        if distance > farthest_distance
+            farthest = position
+            farthest_distance = distance
+        end
+    end
+    return popat!(candidates, farthest)
+end
+
 function update_minimizer_pool!(state::SHGOState)
     workspace = state.workspace
-    candidates = local_minimum_candidates(state)
+    candidates = copy(local_minimum_candidates(state))
     count = min(length(candidates), state.algorithm.local_starts)
     automatic_budget = count == 0 ? 0 :
-        max(1, _remaining(state.core) ÷ count)
+        state.algorithm.divide_automatic_local_budget ?
+            max(1, _remaining(state.core) ÷ count) :
+            _remaining(state.core)
     previous_rank = workspace.homology_rank
-    for candidate in @view candidates[1:count]
+    latest_minimizer = nothing
+    for _ in 1:count
         _finished(state.core) && break
+        candidate = _next_local_candidate!(
+            candidates,
+            state,
+            state.algorithm.local_start_policy,
+            latest_minimizer,
+        )
         start = @view workspace.sample_points[:, candidate]
         workspace.mapped_vertices[candidate] = true
         lower = workspace.local_lower
@@ -1043,6 +1385,7 @@ function update_minimizer_pool!(state::SHGOState)
             upper,
             budget,
         )
+        latest_minimizer = point
         duplicate = findfirst(
             existing -> _same_minimum(existing, point),
             workspace.minimizer_points,

@@ -1,7 +1,9 @@
 using Random
+using LinearAlgebra
 using SAMBO
 
 const DEFAULT_TRIALS = 1:10
+const ROTATION_IDS = 1:6
 const SOURCE_COMMIT = if haskey(ENV, "GITHUB_SHA")
     ENV["GITHUB_SHA"]
 else
@@ -17,13 +19,6 @@ else
     end
 end
 
-const ROTATION = [
-    -0.6593804733957869 0.40611875581020845 0.16266300278010432 0.5752843417117289 0.20705946293608232
-    -0.39562828403747224 -0.5245384304015962 0.2924634597652826 0.08246149657099422 -0.6899296501722388
-    -0.19781414201873612 -0.43686232517528023 -0.8254056738772803 0.26904408514342243 0.12783437659867097
-    -0.5934424260562083 0.17345445925725733 -0.1921454429053599 -0.7612651988361476 0.03598698837021451
-    -0.13187609467915742 -0.5822300667409905 0.4120576106936707 -0.10167893122409566 0.6807986232723334
-]
 const SHIFT = [0.35, -0.55, 0.8, -0.25, 0.6]
 const HARTMANN6_MINIMIZER =
     [0.20169, 0.150011, 0.476874, 0.275332, 0.311652, 0.6573]
@@ -49,62 +44,192 @@ function hartmann6(x)
     )
 end
 
-function transformed(x)
-    return ROTATION * (x .- SHIFT)
+function challenge_rotation(dimensions, rotation_id)
+    rotation = Matrix{Float64}(I, dimensions, dimensions)
+    offset = mod(rotation_id - 1, dimensions - 1) + 1
+    for axis in 1:dimensions
+        other = mod(axis + offset - 1, dimensions) + 1
+        angle = (mod(rotation_id * (2axis + 1), 19) + 1) * π / 37
+        cosine = cos(angle)
+        sine = sin(angle)
+        for column in 1:dimensions
+            left = rotation[axis, column]
+            right = rotation[other, column]
+            rotation[axis, column] = cosine * left - sine * right
+            rotation[other, column] = sine * left + cosine * right
+        end
+    end
+    return rotation
 end
 
-function rotated_rastrigin(x)
-    y = transformed(x)
+function transformed(x, rotation)
+    return rotation * (x .- SHIFT)
+end
+
+function rotated_rastrigin(x, rotation)
+    y = transformed(x, rotation)
     return 10length(y) + sum(value^2 - 10cos(2π * value) for value in y)
 end
 
-function rotated_rosenbrock(x)
-    y = transformed(x) .+ 1
+function rotated_rosenbrock(x, rotation)
+    y = transformed(x, rotation) .+ 1
     return sum(
         100(y[index + 1] - y[index]^2)^2 + (1 - y[index])^2
         for index in 1:length(y)-1
     )
 end
 
-const CASES = (
-    (
-        name="hartmann6",
-        problem=Problem(hartmann6, Box(zeros(6), ones(6))),
-        optimum=-3.322368011415515,
-    ),
-    (
-        name="rotated_rastrigin5",
-        problem=Problem(rotated_rastrigin, Box(fill(-5.12, 5), fill(5.12, 5))),
-        optimum=0.0,
-    ),
-    (
-        name="rotated_rosenbrock5",
-        problem=Problem(rotated_rosenbrock, Box(fill(-3.0, 5), fill(3.0, 5))),
-        optimum=0.0,
-    ),
-)
+function oriented_hartmann6(x, rotation_id)
+    oriented = similar(x)
+    for axis in 1:6
+        source = mod(axis + rotation_id - 2, 6) + 1
+        reflected = iseven(axis + rotation_id)
+        oriented[axis] = reflected ? 1 - x[source] : x[source]
+    end
+    return hartmann6(oriented)
+end
+
+function hartmann_preimage(point, rotation_id)
+    preimage = similar(point)
+    for axis in 1:6
+        source = mod(axis + rotation_id - 2, 6) + 1
+        reflected = iseven(axis + rotation_id)
+        preimage[source] = reflected ? 1 - point[axis] : point[axis]
+    end
+    return preimage
+end
+
+function benchmark_cases()
+    cases = NamedTuple[]
+    for rotation_id in ROTATION_IDS
+        rotation = challenge_rotation(5, rotation_id)
+        push!(
+            cases,
+            (
+                name="hartmann6",
+                rotation_id,
+                problem=Problem(
+                    x -> oriented_hartmann6(x, rotation_id),
+                    Box(zeros(6), ones(6)),
+                ),
+                optimum=-3.322368011415515,
+            ),
+            (
+                name="rotated_rastrigin5",
+                rotation_id,
+                problem=Problem(
+                    x -> rotated_rastrigin(x, rotation),
+                    Box(fill(-5.12, 5), fill(5.12, 5)),
+                ),
+                optimum=0.0,
+            ),
+            (
+                name="rotated_rosenbrock5",
+                rotation_id,
+                problem=Problem(
+                    x -> rotated_rosenbrock(x, rotation),
+                    Box(fill(-3.0, 5), fill(3.0, 5)),
+                ),
+                optimum=0.0,
+            ),
+        )
+    end
+    return Tuple(cases)
+end
+
+const CASES = benchmark_cases()
+
+function python_sambo_sceua_profile()
+    algorithm = SCEUA(
+        complex_size=2,
+        objective_tolerance=1e-6,
+        population_tolerance=1e-6,
+        stall_iterations=30,
+    )
+    @assert algorithm.complexes == 0
+    @assert algorithm.complex_size == 2
+    @assert algorithm.reflection == 1.0
+    @assert algorithm.contraction == 0.5
+    @assert algorithm.repair isa SAMBO.MoveTowardCentroid
+    @assert algorithm.objective_tolerance == 1e-6
+    @assert algorithm.population_tolerance == 1e-6
+    @assert algorithm.stall_iterations == 30
+    return algorithm
+end
 
 const ALGORITHMS = (
-    ("SCE-UA", () -> SCEUA(), 1000),
-    ("SMBO", () -> SMBO(), 300),
-    ("SHGO", () -> SHGO(sampling_points=128), 1000),
+    ("SCE-UA", python_sambo_sceua_profile, 1000),
+    ("SMBO", () -> SMBO(), 100),
+    ("SHGO", () -> SHGO(PythonSAMBOProfile()), 1000),
 )
 
-function shared_initial_point(case, trial_id)
+function shared_initial_design(case, count, trial_id)
     dimensions = SAMBO.dimension(case.problem.space)
-    latent = [
-        mod(trial_id * (2axis + 1), 17) / 17
-        for axis in 1:dimensions
-    ]
-    return decode(case.problem.space, latent)
+    design = Vector{Vector{Float64}}(undef, count)
+    latent = Matrix{Float64}(undef, dimensions, count)
+    for axis in 1:dimensions
+        multiplier = 2axis + trial_id + case.rotation_id
+        while gcd(multiplier, count) != 1
+            multiplier += 1
+        end
+        offset = mod(
+            trial_id * (11 + 2(axis - 1)) +
+            case.rotation_id * (17 + axis - 1),
+            count,
+        )
+        for column in 1:count
+            stratum = mod(multiplier * (column - 1) + offset, count)
+            jitter = mod(
+                trial_id * 101 +
+                case.rotation_id * 211 +
+                axis * 307 +
+                column * 401,
+                997,
+            ) / 997
+            latent[axis, column] = (stratum + jitter) / count
+        end
+    end
+    for column in 1:count
+        design[column] = decode(
+            case.problem.space,
+            @view(latent[:, column]),
+        )
+    end
+    return design
 end
 
 initial_design_hash(case, trial_id) =
-    "shared-design-v1:$(case.name):$trial_id"
+    "shared-counted-lhs-v3:$(case.name):$(case.rotation_id):$trial_id"
 
 shared_design_capability(algorithm_name) =
-    algorithm_name == "SMBO" ?
-    "injected-x0-y0" : "not-supported-cross-runtime"
+    algorithm_name in ("SCE-UA", "SMBO") ?
+    "injected-counted-lhs" : "not-supported-cross-runtime"
+
+shared_halton_shift(dimensions, rotation_id, trial_id) = [
+    mod(
+        trial_id * 127 +
+        rotation_id * 283 +
+        axis * 419,
+        997,
+    ) / 997
+    for axis in 1:dimensions
+]
+
+function matched_algorithm(algorithm_name, make_algorithm, case, trial_id)
+    algorithm_name == "SHGO" || return make_algorithm()
+    dimensions = SAMBO.dimension(case.problem.space)
+    return SHGO(
+        PythonSAMBOProfile();
+        sampling=SAMBO.FixedShiftDesign(
+            HaltonDesign(skip=0),
+            shared_halton_shift(
+                dimensions,
+                case.rotation_id,
+                trial_id,
+            ),
+        ),
+    )
+end
 
 benchmark_trials(algorithm_name, trials) =
     Tuple(trials)
@@ -115,14 +240,25 @@ normalized_gap(value, optimum) =
 function main(io=stdout; trials=DEFAULT_TRIALS)
     abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6 ||
         error("Hartmann-6 reference minimum is inconsistent")
-    rotated_rastrigin(SHIFT) == 0 ||
-        error("rotated Rastrigin reference minimum is inconsistent")
-    rotated_rosenbrock(SHIFT) == 0 ||
-        error("rotated Rosenbrock reference minimum is inconsistent")
+    for rotation_id in ROTATION_IDS
+        abs(
+            oriented_hartmann6(
+                hartmann_preimage(HARTMANN6_MINIMIZER, rotation_id),
+                rotation_id,
+            ) + 3.322368011415515,
+        ) < 1e-6 ||
+            error("oriented Hartmann-6 reference minimum is inconsistent")
+        rotation = challenge_rotation(5, rotation_id)
+        rotated_rastrigin(SHIFT, rotation) == 0 ||
+            error("rotated Rastrigin reference minimum is inconsistent")
+        rotated_rosenbrock(SHIFT, rotation) == 0 ||
+            error("rotated Rosenbrock reference minimum is inconsistent")
+    end
     println(
         io,
         "runtime,runtime_version,source_commit,python_sambo_version,problem,algorithm,",
-        "trial_id,configuration_hash,initial_design_hash,initial_design_capability,",
+        "rotation_id,trial_id,configuration_hash,initial_design_hash,",
+        "initial_design_capability,",
         "budget,evaluation,evaluations,iteration,best_value,normalized_gap,",
         "minimum,optimum,noninferiority_margin,feasible,duplicate,retcode",
     )
@@ -130,28 +266,53 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
             (algorithm_name, make_algorithm, budget) in ALGORITHMS,
             trial_id in benchmark_trials(algorithm_name, trials)
         design_capability = shared_design_capability(algorithm_name)
-        supports_shared_design = design_capability == "injected-x0-y0"
+        supports_shared_design = design_capability == "injected-counted-lhs"
         result = if supports_shared_design
-            initial_point = shared_initial_point(case, trial_id)
-            initial_value = case.problem.objective(initial_point)
+            dimensions = SAMBO.dimension(case.problem.space)
+            initial_count = if algorithm_name == "SCE-UA"
+                profile = make_algorithm()
+                complex_size = profile.complex_size == 0 ? 2 : profile.complex_size
+                min(
+                    max(2, budget ÷ complex_size - 1),
+                    max(5, floor(Int, 3log2(dimensions))),
+                ) * complex_size
+            else
+                min(
+                    max(1, budget - 20),
+                    floor(Int, 40dimensions * max(1, log2(dimensions))),
+                )
+            end
             solve(
                 case.problem,
-                make_algorithm();
-                initial_points=[initial_point],
-                initial_values=[initial_value],
+                matched_algorithm(
+                    algorithm_name,
+                    make_algorithm,
+                    case,
+                    trial_id,
+                );
+                initial_points=shared_initial_design(
+                    case,
+                    initial_count,
+                    trial_id,
+                ),
                 maximum_evaluations=budget,
                 rng=Xoshiro(trial_id),
             )
         else
             solve(
                 case.problem,
-                make_algorithm();
+                matched_algorithm(
+                    algorithm_name,
+                    make_algorithm,
+                    case,
+                    trial_id,
+                );
                 maximum_evaluations=budget,
                 rng=Xoshiro(trial_id),
             )
         end
         configuration_hash =
-            "native-noninferiority-v3:$algorithm_name:$budget"
+            "python-sambo-1.25.2-matched-v5:$algorithm_name:$budget:6-rotations"
         design_hash = supports_shared_design ?
             initial_design_hash(case, trial_id) : "none"
         best = Inf
@@ -170,7 +331,8 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
             println(
                 io,
                 "Julia,$VERSION,$SOURCE_COMMIT,n/a,$(case.name),$algorithm_name,",
-                "$trial_id,$configuration_hash,$design_hash,$design_capability,$budget,",
+                "$(case.rotation_id),$trial_id,$configuration_hash,$design_hash,",
+                "$design_capability,$budget,",
                 "$evaluation,$evaluation,$(result.trace.iterations[index]),$best,",
                 "$(normalized_gap(best, case.optimum)),$best,$(case.optimum),",
                 "0.25,true,$duplicate,$result_code",

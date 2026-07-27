@@ -158,7 +158,7 @@ end
         step!(state)
         before = evaluation_count(result(state))
         step!(state)
-        @test evaluation_count(result(state)) - before == 2
+        @test evaluation_count(result(state)) - before == 1
         @test policy.calls == 2
     end
 

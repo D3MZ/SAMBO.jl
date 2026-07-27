@@ -75,7 +75,7 @@ end
         maxiters=10,
         rng=MersenneTwister(6),
     )
-    @test solution.stats.fevals == 10
+    @test 0 < solution.stats.fevals <= 10
     @test solution.original isa SAMBO.Result
     @test solution.u == SAMBO.minimizer(solution.original)
 
@@ -120,7 +120,7 @@ end
         maximum_evaluations=10,
         rng=MersenneTwister(5),
     )
-    @test SAMBO.evaluation_count(result) == 10
+    @test 0 < SAMBO.evaluation_count(result) <= 10
     @test isfinite(SAMBO.minimum(result))
     @test !isnothing(SAMBO.fittedmodel(result))
 

@@ -1,4 +1,7 @@
 struct AutomaticLengthScale end
+struct AutomaticARDLengthScale end
+struct Matern52Kernel end
+struct SquaredExponentialKernel end
 struct IsotropicLengthScale{T<:Real}
     value::T
 end
@@ -28,12 +31,14 @@ struct GeometricJitter{T<:Real}
         new{T}(initial, factor, attempts)
     end
 end
+struct NoJitter end
 function GeometricJitter(initial=1e-10, factor=10.0, attempts=8)
     promoted = promote(initial, factor)
     return GeometricJitter(promoted[1], promoted[2], attempts)
 end
 
 _length_scale(::AutomaticLengthScale) = AutomaticLengthScale()
+_length_scale(::AutomaticARDLengthScale) = AutomaticARDLengthScale()
 function _length_scale(scale::Real)
     scale == 0 && return AutomaticLengthScale()
     isfinite(scale) && scale > 0 ||
@@ -44,17 +49,22 @@ function _length_scale(scale::AbstractVector)
     return ARDLengthScale(scale)
 end
 _jitter_policy(policy::GeometricJitter) = policy
+_jitter_policy(policy::NoJitter) = policy
 _jitter_policy(initial::Real) = GeometricJitter(initial)
 
-struct GaussianProcessSurrogate{L,N<:Real,J}
+struct GaussianProcessSurrogate{L,N<:Real,J,K}
     length_scale::L
     noise::N
     jitter::J
+    kernel::K
+    optimize_hyperparameters::Bool
 end
 function GaussianProcessSurrogate(;
     length_scale=AutomaticLengthScale(),
     noise=1e-8,
     jitter=GeometricJitter(),
+    kernel=Matern52Kernel(),
+    optimize_hyperparameters=false,
 )
     isfinite(noise) && noise >= 0 ||
         throw(ArgumentError("noise must be finite and nonnegative"))
@@ -62,10 +72,12 @@ function GaussianProcessSurrogate(;
         _length_scale(length_scale),
         noise,
         _jitter_policy(jitter),
+        kernel,
+        optimize_hyperparameters,
     )
 end
 
-struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,LM,L}
+struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,LM,L,K}
     points::M
     factor::F
     lower::LM
@@ -74,17 +86,20 @@ struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,LM,L}
     output_scale::T
     length_scale::L
     noise::T
+    kernel::K
+    amplitude::T
 end
 
 resolved_length_scale_type(::AutomaticLengthScale, ::Type{T}) where {T} = T
+resolved_length_scale_type(::AutomaticARDLengthScale, ::Type{T}) where {T} = Vector{T}
 resolved_length_scale_type(::IsotropicLengthScale, ::Type{T}) where {T} = T
 resolved_length_scale_type(::ARDLengthScale, ::Type{T}) where {T} = Vector{T}
 fittedmodeltype(specification, ::Type{TX}, ::Type{TY}) where {TX,TY} = Any
 function fittedmodeltype(
-    specification::GaussianProcessSurrogate{L,N},
+    specification::GaussianProcessSurrogate{L,N,J,K},
     ::Type{TX},
     ::Type{TY},
-) where {L,N,TX,TY}
+) where {L,N,J,K,TX,TY}
     T = promote_type(TX, TY, typeof(float(specification.noise)))
     LS = resolved_length_scale_type(specification.length_scale, T)
     return GaussianProcessModel{
@@ -94,6 +109,7 @@ function fittedmodeltype(
         Cholesky{T,Matrix{T}},
         Matrix{T},
         LS,
+        K,
     }
 end
 
@@ -163,6 +179,13 @@ end
 
 resolve_length_scale(::AutomaticLengthScale, points, ::Type{T}) where {T} =
     _default_length_scale(points)
+function resolve_length_scale(::AutomaticARDLengthScale, points, ::Type{T}) where {T}
+    d = size(points, 1)
+    return [
+        clamp(std(@view(points[axis, :]); corrected=false), T(0.01), T(100))
+        for axis in 1:d
+    ]
+end
 resolve_length_scale(scale::IsotropicLengthScale, points, ::Type{T}) where {T} =
     T(scale.value)
 function resolve_length_scale(scale::ARDLengthScale, points, ::Type{T}) where {T}
@@ -187,6 +210,13 @@ function _factor_covariance(covariance, policy::GeometricJitter, ::Type{T}) wher
         "unable to factor surrogate covariance matrix",
     ))
 end
+function _factor_covariance(covariance, ::NoJitter, ::Type{T}) where {T}
+    factor = cholesky(Symmetric(covariance); check=false)
+    isposdef(factor) && return factor
+    throw(NumericalFailureError(
+        "unable to factor surrogate covariance matrix",
+    ))
+end
 
 function fitmodel(specification::GaussianProcessSurrogate, points, values, rng=Random.default_rng())
     size(points, 2) == length(values) ||
@@ -206,18 +236,28 @@ function fitmodel(specification::GaussianProcessSurrogate, points, values, rng=R
     output_scale = std(y; corrected=false)
     iszero(output_scale) && (output_scale = one(T))
     standardized = (y .- output_mean) ./ output_scale
-    length_scale = resolve_length_scale(specification.length_scale, X, T)
+    length_scale = specification.optimize_hyperparameters ?
+        ones(T, size(X, 1)) :
+        resolve_length_scale(specification.length_scale, X, T)
+    amplitude = one(T)
+    if specification.optimize_hyperparameters
+        amplitude, length_scale = _optimize_rbf_hyperparameters(
+            X,
+            standardized,
+            T(specification.noise),
+        )
+    end
     covariance = Matrix{T}(undef, n, n)
     for column in 1:n
-        covariance[column, column] = one(T) + T(specification.noise)
+        covariance[column, column] = amplitude + T(specification.noise)
         for row in column+1:n
-            value = _matern52_scaled(_scaled_distance(
+            value = _kernel_value(specification.kernel, _scaled_distance(
                 @view(X[:, row]),
                 @view(X[:, column]),
                 length_scale,
             ))
-            covariance[row, column] = value
-            covariance[column, row] = value
+            covariance[row, column] = amplitude * value
+            covariance[column, row] = amplitude * value
         end
     end
     factor = _factor_covariance(covariance, specification.jitter, T)
@@ -231,8 +271,153 @@ function fitmodel(specification::GaussianProcessSurrogate, points, values, rng=R
         output_scale,
         length_scale,
         T(specification.noise),
+        specification.kernel,
+        amplitude,
     )
 end
+
+function _rbf_nll_gradient(log_parameters, points, values, noise)
+    T = eltype(points)
+    amplitude = exp(log_parameters[1])
+    scales = exp.(@view log_parameters[2:end])
+    dimensions = size(points, 1)
+    n = length(values)
+    covariance = Matrix{T}(undef, n, n)
+    correlations = Matrix{T}(undef, n, n)
+    for column in 1:n
+        covariance[column, column] = amplitude + noise
+        correlations[column, column] = one(T)
+        for row in column+1:n
+            correlation = exp(
+                -_scaled_distance(
+                    @view(points[:, row]),
+                    @view(points[:, column]),
+                    scales,
+                ) / 2,
+            )
+            value = amplitude * correlation
+            covariance[row, column] = value
+            covariance[column, row] = value
+            correlations[row, column] = correlation
+            correlations[column, row] = correlation
+        end
+    end
+    factor = cholesky(Symmetric(covariance); check=false)
+    isposdef(factor) || return T(Inf), fill(T(Inf), length(log_parameters))
+    alpha = factor \ values
+    nll = dot(values, alpha) / 2 +
+        sum(log, diag(factor.L)) +
+        n * log(T(2π)) / 2
+    inverse_covariance = inv(factor)
+    sensitivity = inverse_covariance - alpha * alpha'
+    gradient = Vector{T}(undef, dimensions + 1)
+    gradient[1] = dot(sensitivity, amplitude .* correlations) / 2
+    for axis in 1:dimensions
+        derivative = zero(T)
+        inverse_scale_squared = inv(scales[axis]^2)
+        for column in 1:n, row in 1:n
+            delta = points[axis, row] - points[axis, column]
+            derivative += sensitivity[row, column] *
+                amplitude * correlations[row, column] *
+                delta^2 * inverse_scale_squared
+        end
+        gradient[axis + 1] = derivative / 2
+    end
+    return nll, gradient
+end
+_rbf_negative_log_likelihood(log_parameters, points, values, noise) =
+    first(_rbf_nll_gradient(log_parameters, points, values, noise))
+
+function _optimize_rbf_hyperparameters(points, values, noise)
+    T = eltype(points)
+    lower = T[log(T(0.1)); fill(log(T(0.01)), size(points, 1))]
+    upper = T[log(T(10)); fill(log(T(100)), size(points, 1))]
+    parameters = zeros(T, size(points, 1) + 1)
+    value, gradient = _rbf_nll_gradient(parameters, points, values, noise)
+    steps = Vector{Vector{T}}()
+    gradient_steps = Vector{Vector{T}}()
+    inverse_curvatures = T[]
+    memory = 10
+    for _ in 1:40
+        projected = copy(gradient)
+        for index in eachindex(projected)
+            at_lower = parameters[index] <= lower[index] + sqrt(eps(T))
+            at_upper = parameters[index] >= upper[index] - sqrt(eps(T))
+            (at_lower && projected[index] > 0) && (projected[index] = 0)
+            (at_upper && projected[index] < 0) && (projected[index] = 0)
+        end
+        maximum(abs, projected) <= T(1e-5) && break
+        direction = copy(projected)
+        coefficients = Vector{T}(undef, length(steps))
+        for history in length(steps):-1:1
+            coefficients[history] =
+                inverse_curvatures[history] * dot(steps[history], direction)
+            direction .-= coefficients[history] .* gradient_steps[history]
+        end
+        if !isempty(steps)
+            last_step = steps[end]
+            last_gradient_step = gradient_steps[end]
+            direction .*= dot(last_step, last_gradient_step) /
+                dot(last_gradient_step, last_gradient_step)
+        end
+        for history in eachindex(steps)
+            coefficient =
+                inverse_curvatures[history] *
+                dot(gradient_steps[history], direction)
+            direction .+=
+                (coefficients[history] - coefficient) .* steps[history]
+        end
+        direction .*= -one(T)
+        dot(direction, projected) < 0 || (direction .= -projected)
+        step_length = one(T)
+        accepted = false
+        candidate = similar(parameters)
+        candidate_value = value
+        candidate_gradient = gradient
+        slope = dot(projected, direction)
+        for _ in 1:16
+            @. candidate = clamp(
+                parameters + step_length * direction,
+                lower,
+                upper,
+            )
+            candidate == parameters && break
+            candidate_value, candidate_gradient =
+                _rbf_nll_gradient(candidate, points, values, noise)
+            if isfinite(candidate_value) &&
+                    candidate_value <= value + T(1e-4) *
+                    dot(gradient, candidate - parameters)
+                accepted = true
+                break
+            end
+            step_length /= 2
+        end
+        accepted || break
+        parameter_step = candidate - parameters
+        gradient_step = candidate_gradient - gradient
+        curvature = dot(parameter_step, gradient_step)
+        if curvature > sqrt(eps(T)) * norm(parameter_step) * norm(gradient_step)
+            length(steps) == memory && begin
+                popfirst!(steps)
+                popfirst!(gradient_steps)
+                popfirst!(inverse_curvatures)
+            end
+            push!(steps, parameter_step)
+            push!(gradient_steps, gradient_step)
+            push!(inverse_curvatures, inv(curvature))
+        end
+        parameters = candidate
+        value = candidate_value
+        gradient = candidate_gradient
+    end
+    return clamp(exp(parameters[1]), T(0.1), T(10)),
+        clamp.(exp.(parameters[2:end]), T(0.01), T(100))
+end
+
+_kernel_value(::Matern52Kernel, distance_squared) =
+    _matern52_scaled(distance_squared)
+_kernel_value(::SquaredExponentialKernel, distance_squared) =
+    exp(-distance_squared / 2)
 
 function _kernelmatrix(model::GaussianProcessModel, points)
     size(points, 1) == size(model.points, 1) ||
@@ -240,7 +425,7 @@ function _kernelmatrix(model::GaussianProcessModel, points)
     T = eltype(model.points)
     kernel = Matrix{T}(undef, size(model.points, 2), size(points, 2))
     for column in axes(points, 2), observation in axes(model.points, 2)
-        kernel[observation, column] = _matern52_scaled(_scaled_distance(
+        kernel[observation, column] = model.amplitude * _kernel_value(model.kernel, _scaled_distance(
             @view(points[:, column]),
             @view(model.points[:, observation]),
             model.length_scale,
@@ -252,7 +437,7 @@ function kernelmatrix!(kernel, model::GaussianProcessModel, points)
     size(kernel) == (size(model.points, 2), size(points, 2)) ||
         throw(DimensionMismatch("kernel destination has the wrong size"))
     for column in axes(points, 2), observation in axes(model.points, 2)
-        kernel[observation, column] = _matern52_scaled(_scaled_distance(
+        kernel[observation, column] = model.amplitude * _kernel_value(model.kernel, _scaled_distance(
             @view(points[:, column]),
             @view(model.points[:, observation]),
             model.length_scale,
@@ -455,7 +640,7 @@ function predictmeanvariance!(
     T = eltype(solved_kernel)
     for column in axes(solved_kernel, 2)
         latent_variance = max(
-            one(T) - sum(abs2, @view solved_kernel[:, column]),
+            model.amplitude - sum(abs2, @view solved_kernel[:, column]),
             zero(T),
         )
         variances[column] = model.output_scale^2 * latent_variance
@@ -494,6 +679,17 @@ struct LowerConfidenceBound{T<:Real}
     exploration::T
 end
 LowerConfidenceBound(exploration=2.0) = LowerConfidenceBound{typeof(exploration)}(exploration)
+struct RandomizedLowerConfidenceBound{T<:Real}
+    lower::T
+    upper::T
+    function RandomizedLowerConfidenceBound(lower::T, upper::T) where {T<:Real}
+        isfinite(lower) && isfinite(upper) && lower <= upper ||
+            throw(ArgumentError("exploration bounds must be finite and ordered"))
+        new{T}(lower, upper)
+    end
+end
+RandomizedLowerConfidenceBound(; lower=-2.0, upper=2.0) =
+    RandomizedLowerConfidenceBound(promote(lower, upper)...)
 struct GreedyMean end
 struct DistanceUncertainty{S}
     surrogate::S

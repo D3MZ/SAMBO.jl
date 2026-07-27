@@ -7,12 +7,13 @@
         rng=MersenneTwister(2),
     )
     convergence = convergencedata(result)
-    @test length(convergence.best) == 12
+    completed = evaluation_count(result)
+    @test length(convergence.best) == completed
     @test issorted(convergence.best; rev=true)
-    @test length(regretdata(result; optimum=0).regret) == 12
+    @test length(regretdata(result; optimum=0).regret) == completed
     @test size(partialdependence(result; dimensions=(1,), resolution=8).values) == (8,)
     @test size(partialdependence(result; dimensions=(1, 2), resolution=5).values) == (5, 5)
-    @test length(Tables.rows(observations(result))) == 12
+    @test length(Tables.rows(observations(result))) == completed
     @test first(observations(result)).evaluation == 1
 
     known = minimize(

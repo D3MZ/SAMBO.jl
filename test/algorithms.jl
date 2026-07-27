@@ -19,7 +19,7 @@ end
 @testset "algorithms" begin
     for algorithm in (
         SCEUA(),
-        SMBO(candidate_pool=256),
+        SMBO(candidate_pool=256, no_change_iterations=typemax(Int)),
         TopologicalMultistart(samples=20),
     )
         result = solve(
@@ -98,7 +98,46 @@ end
     @test_throws ArgumentError SCEUA(complex_size=1)
 
     @testset "SCE-UA kernels and repair" begin
+        @test SCEUA().complex_size == 0
+        @test SCEUA().population_tolerance == 1e-7
+        @test SCEUA().objective_tolerance == 1e-7
+        @test SCEUA().stall_iterations == 30
+        five_dimensional = init(
+            Problem(x -> sum(abs2, x), Box(fill(-1.0, 5), fill(1.0, 5))),
+            SCEUA();
+            maximum_evaluations=1_000,
+            rng=Xoshiro(91),
+        )
+        six_dimensional = init(
+            Problem(x -> sum(abs2, x), Box(fill(-1.0, 6), fill(1.0, 6))),
+            SCEUA();
+            maximum_evaluations=1_000,
+            rng=Xoshiro(92),
+        )
+        @test size(five_dimensional.workspace.population, 2) == 12
+        @test five_dimensional.workspace.complexes == 6
+        @test size(six_dimensional.workspace.population, 2) == 14
+        @test six_dimensional.workspace.complexes == 7
+
+        stalled = solve(
+            Problem(_ -> 1.0, Box(fill(-1.0, 5), fill(1.0, 5))),
+            SCEUA();
+            maximum_evaluations=1_000,
+            rng=Xoshiro(93),
+        )
+        @test retcode(stalled) == :success
+        @test iteration_count(stalled) == 31
+        @test evaluation_count(stalled) == 552
+
         @test SAMBO._complex_members(12, 3, 2) == [2, 5, 8, 11]
+        members_buffer = zeros(Int, 4)
+        @test SAMBO._python_complex_members!(
+            members_buffer,
+            6,
+            3,
+            1,
+        ) == 3
+        @test members_buffer[1:3] == [1, 1, 4]
         population = reshape(collect(1.0:12.0), 2, 6)
         centroid = zeros(2)
         members = [2, 4, 6]

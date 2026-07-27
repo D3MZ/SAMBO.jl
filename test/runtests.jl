@@ -13,6 +13,7 @@ using Tables
     include("corrected_allocation_review.jl")
     include("coverage_diag_eval.jl")
     include("coverage_sce_shgo.jl")
+    include("shgo_python_profile.jl")
     include("coverage_smbo_gp.jl")
     include("interoperability.jl")
     include("plotting.jl")
@@ -25,4 +26,5 @@ using Tables
     include("corrected_interop_contracts.jl")
     include("corrected_performance_review.jl")
     include("native_default_review.jl")
+    include("smbo_python_alignment.jl")
 end

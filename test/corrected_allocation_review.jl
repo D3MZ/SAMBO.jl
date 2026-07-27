@@ -77,7 +77,10 @@ end
     step!(sceua)
     sceua_bytes = @allocated step!(sceua)
     @info "SCE-UA warm step allocation" sceua_bytes
-    @test sceua_bytes <= 2_048
+    # Python-profile evolution evaluates reflection, contraction, and fallback
+    # sequentially, so a warm step has more small view objects than the former
+    # batched kernel while remaining allocation-bounded.
+    @test sceua_bytes <= 4_096
 
     shgo = init(
         problem,

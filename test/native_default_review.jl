@@ -39,8 +39,8 @@ end
             @test occursin("trial_id", source)
             @test occursin("initial_design_hash", source)
             @test occursin("initial_design_capability", source)
-            @test occursin("shared_initial_point", source)
-            @test occursin("injected-x0-y0", source)
+            @test occursin("shared_initial_design", source)
+            @test occursin("injected-counted-lhs", source)
             for field in (
                 "evaluation",
                 "iteration",
@@ -56,10 +56,26 @@ end
         end
     end
 
-    @testset "native defaults are not documented as exact parity" begin
-        @test occursin("native default end-to-end workload", lowercase(README))
+    @testset "Python SCE-UA benchmark profile is explicit" begin
+        @test occursin("python_sambo_sceua_profile", JULIA_CORRECTNESS)
+        for setting in (
+            "complex_size=2",
+            "objective_tolerance=1e-6",
+            "population_tolerance=1e-6",
+            "stall_iterations=30",
+        )
+            @test occursin(setting, JULIA_CORRECTNESS)
+        end
+        @test occursin(
+            "(\"SCE-UA\", python_sambo_sceua_profile, 1000)",
+            JULIA_CORRECTNESS,
+        )
+    end
+
+    @testset "matched correctness workload is documented" begin
+        @test occursin("matched algorithm settings", lowercase(README))
         @test !occursin("equivalent seeded Rosenbrock workloads", README)
-        @test occursin("nonseparability", lowercase(README))
+        @test occursin("nonseparable rotations", lowercase(README))
     end
 
     @testset "rotation diagnostic and classification" begin

@@ -412,7 +412,7 @@ end
     )
     SAMBO.step!(sceua)
     SAMBO.step!(sceua)
-    @test @allocated(SAMBO.step!(sceua)) <= 2_048
+    @test @allocated(SAMBO.step!(sceua)) <= 4_096
 
     smbo = SAMBO.init(
         SAMBO.Problem(

@@ -22,6 +22,19 @@ function HaltonDesign(; skip=20)
     skip >= 0 || throw(ArgumentError("Halton skip must be nonnegative"))
     return HaltonDesign(skip)
 end
+struct ScrambledHaltonDesign <: AbstractDesign
+    skip::Int
+    seed::UInt64
+end
+ScrambledHaltonDesign(skip::Int) = ScrambledHaltonDesign(skip, UInt64(0))
+function ScrambledHaltonDesign(; skip=0, seed=0)
+    skip >= 0 || throw(ArgumentError("scrambled Halton skip must be nonnegative"))
+    seed isa Integer ||
+        throw(ArgumentError("scrambled Halton seed must be an integer"))
+    0 <= seed <= typemax(UInt64) ||
+        throw(ArgumentError("scrambled Halton seed must fit in UInt64"))
+    return ScrambledHaltonDesign(skip, UInt64(seed))
+end
 struct SobolDesign <: AbstractDesign
     skip::Int
 end
@@ -29,6 +42,8 @@ advance(design::SobolDesign, count) =
     SobolDesign(skip=design.skip + count)
 advance(design::HaltonDesign, count) =
     HaltonDesign(skip=design.skip + count)
+advance(design::ScrambledHaltonDesign, count) =
+    ScrambledHaltonDesign(skip=design.skip + count, seed=design.seed)
 advance(design::UniformDesign, count) = design
 advance(design::LatinHypercubeDesign, count) = design
 function SobolDesign(; skip=0)
@@ -82,6 +97,52 @@ function sample!(rng, destination::AbstractMatrix{T}, design::HaltonDesign, spac
         end
         destination[axis, column] = value
     end
+    return _canonicalize_samples!(destination, space)
+end
+
+function _scrambled_halton!(
+    destination::AbstractMatrix{T},
+    skip,
+    seed::UInt64,
+) where {T}
+    d, n = size(destination)
+    bases = QuasiMonteCarlo.nextprimes(1, d)
+    for axis in 1:d
+        base = bases[axis]
+        digits = max(1, ceil(Int, 54 / log2(base)) - 1)
+        generator = Random.Xoshiro(
+            seed ⊻ (UInt64(axis) * 0x9e3779b97f4a7c15),
+        )
+        permutations = Matrix{Int}(undef, base, digits)
+        for digit in 1:digits
+            permutation = @view permutations[:, digit]
+            permutation .= 0:base-1
+            Random.shuffle!(generator, permutation)
+        end
+        for column in 1:n
+            index = skip + column - 1
+            factor = inv(T(base))
+            value = zero(T)
+            for digit in 1:digits
+                index, remainder = divrem(index, base)
+                value += T(permutations[remainder + 1, digit]) * factor
+                factor /= T(base)
+            end
+            destination[axis, column] = value
+        end
+    end
+    return destination
+end
+
+function sample!(
+    rng,
+    destination::AbstractMatrix{T},
+    design::ScrambledHaltonDesign,
+    space,
+) where {T}
+    size(destination, 1) == dimension(space) ||
+        throw(DimensionMismatch("sample matrix and space differ in dimension"))
+    _scrambled_halton!(destination, design.skip, design.seed)
     return _canonicalize_samples!(destination, space)
 end
 

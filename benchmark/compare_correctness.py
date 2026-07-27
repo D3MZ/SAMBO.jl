@@ -1,14 +1,13 @@
 import csv
 import math
-import random
 import statistics
 import sys
 
 
-CONFIGURATION_PREFIX = "native-noninferiority-v3:"
+CONFIGURATION_PREFIX = "python-sambo-1.25.2-matched-v5:"
 MINIMUM_TRIALS = 10
-BOOTSTRAP_SAMPLES = 10_000
-CONFIDENCE = 0.95
+REQUIRED_ROTATIONS = 6
+REGRET_FLOOR = 1e-6
 MATCHED_METADATA = (
     "budget",
     "optimum",
@@ -24,6 +23,7 @@ REQUIRED_COLUMNS = (
     "source_commit",
     "problem",
     "algorithm",
+    "rotation_id",
     "trial_id",
     "configuration_hash",
     "initial_design_hash",
@@ -76,6 +76,7 @@ def read_results(path):
             key = (
                 row["problem"],
                 row["algorithm"],
+                _integer(row, "rotation_id", None),
                 _integer(row, "trial_id", None),
                 _integer(row, "evaluation", None),
             )
@@ -86,9 +87,9 @@ def read_results(path):
         budget = _integer(row, "budget", key)
         evaluations = _integer(row, "evaluations", key)
         budget > 0 or _fail(f"invalid budget for {key}")
-        evaluations == key[3] or _fail(
+        evaluations == key[4] or _fail(
             f"checkpoint/evaluations mismatch for {key}: "
-            f"checkpoint={key[3]}, evaluations={evaluations}"
+            f"checkpoint={key[4]}, evaluations={evaluations}"
         )
         0 < evaluations <= budget or _fail(
             f"evaluations outside budget for {key}: "
@@ -122,9 +123,9 @@ def read_results(path):
 def _terminal_rows(rows):
     terminal = {}
     for key, row in rows.items():
-        case = key[:3]
-        if case not in terminal or key[3] > terminal[case][0]:
-            terminal[case] = (key[3], key, row)
+        case = key[:4]
+        if case not in terminal or key[4] > terminal[case][0]:
+            terminal[case] = (key[4], key, row)
     return {case: pair[1:] for case, pair in terminal.items()}
 
 
@@ -133,111 +134,106 @@ def normalized_log_regret(row, key):
     optimum = _finite_float(row, "optimum", key)
     scale = max(1.0, abs(optimum))
     regret = abs(minimum - optimum) / scale
-    return math.log10(max(regret, 1e-15))
+    return math.log10(max(regret, REGRET_FLOOR))
 
 
-def bootstrap_median_difference_upper(
-    julia_values,
-    python_values,
-    *,
-    samples=BOOTSTRAP_SAMPLES,
-    confidence=CONFIDENCE,
-    seed=0,
-):
-    julia_values = tuple(julia_values)
-    python_values = tuple(python_values)
-    if not julia_values:
-        raise ValueError("Julia sample must not be empty")
-    if not python_values:
-        raise ValueError("Python sample must not be empty")
-    if samples <= 0:
-        raise ValueError("bootstrap samples must be positive")
-    if not 0 < confidence < 1:
-        raise ValueError("confidence must be in (0, 1)")
-    generator = random.Random(seed)
-    estimates = sorted(
-        statistics.median(
-            julia_values[generator.randrange(len(julia_values))]
-            for _ in julia_values
-        )
-        - statistics.median(
-            python_values[generator.randrange(len(python_values))]
-            for _ in python_values
-        )
-        for _ in range(samples)
-    )
-    index = min(samples - 1, math.ceil(confidence * samples) - 1)
-    return estimates[index]
-
-
-def noninferiority_gate(
-    julia,
-    python,
-    *,
-    samples=BOOTSTRAP_SAMPLES,
-    confidence=CONFIDENCE,
-):
+def noninferiority_gate(julia, python):
     julia_terminal = _terminal_rows(julia)
     python_terminal = _terminal_rows(python)
-    grouped = {}
+    rotations = {}
+    rows = {}
     for case in sorted(julia_terminal):
         julia_key, julia_row = julia_terminal[case]
         python_key, python_row = python_terminal[case]
-        group = case[:2]
-        samples_for_group = grouped.setdefault(
-            group,
+        rotation = case[:3]
+        row = case[:2]
+        samples_for_rotation = rotations.setdefault(
+            rotation,
             {"julia": [], "python": [], "row": julia_row},
         )
-        samples_for_group["julia"].append(
+        samples_for_rotation["julia"].append(
             normalized_log_regret(julia_row, julia_key)
         )
-        samples_for_group["python"].append(
+        samples_for_rotation["python"].append(
             normalized_log_regret(python_row, python_key)
+        )
+        row_values = rows.setdefault(
+            row,
+            {
+                "julia_minima": [],
+                "python_minima": [],
+                "rotations": {},
+                "optimum": _finite_float(julia_row, "optimum", row),
+            },
+        )
+        row_values["julia_minima"].append(
+            _finite_float(julia_row, "minimum", julia_key)
+        )
+        row_values["python_minima"].append(
+            _finite_float(python_row, "minimum", python_key)
         )
 
     failures = []
-    summaries = {}
-    for group, values in sorted(grouped.items()):
+    for rotation, values in sorted(rotations.items()):
         count = len(values["julia"])
         if count < MINIMUM_TRIALS:
             failures.append(
-                f"noninferiority {group}: requires at least "
+                f"noninferiority {rotation}: requires at least "
                 f"{MINIMUM_TRIALS} trials, found {count}"
             )
             continue
         margin = _finite_float(
             values["row"],
             "noninferiority_margin",
-            group,
+            rotation,
         )
         observed = statistics.median(values["julia"]) - statistics.median(
             values["python"]
         )
-        upper = bootstrap_median_difference_upper(
-            values["julia"],
-            values["python"],
-            samples=samples,
-            confidence=confidence,
-        )
-        summaries[group] = {
+        passed = observed <= margin
+        rows[rotation[:2]]["rotations"][rotation[2]] = {
             "trials": count,
             "median_difference": observed,
-            "upper_bound": upper,
             "margin": margin,
+            "passed": passed,
         }
-        if upper > margin:
+        if not passed:
             failures.append(
-                f"noninferiority {group}: upper {confidence:.0%} bootstrap "
-                f"bound {upper:.6g} exceeds margin {margin}; "
-                f"observed median log-regret difference={observed:.6g}"
+                f"noninferiority {rotation}: median log-regret difference "
+                f"{observed:.6g} exceeds margin {margin}"
             )
+
+    summaries = {}
+    for row, values in sorted(rows.items()):
+        found = len(values["rotations"])
+        if found != REQUIRED_ROTATIONS:
+            failures.append(
+                f"noninferiority {row}: requires {REQUIRED_ROTATIONS} "
+                f"rotations, found {found}"
+            )
+        passed = sum(
+            rotation["passed"]
+            for rotation in values["rotations"].values()
+        )
+        differences = [
+            rotation["median_difference"]
+            for rotation in values["rotations"].values()
+        ]
+        summaries[row] = {
+            "julia_median": statistics.median(values["julia_minima"]),
+            "python_median": statistics.median(values["python_minima"]),
+            "optimum": values["optimum"],
+            "passed_rotations": passed,
+            "rotations": found,
+            "worst_difference": max(differences) if differences else math.inf,
+        }
     return failures, summaries
 
 
 def validate_matrices(julia, python):
     failures = []
-    julia_cases = {key[:3] for key in julia}
-    python_cases = {key[:3] for key in python}
+    julia_cases = {key[:4] for key in julia}
+    python_cases = {key[:4] for key in python}
     if julia_cases != python_cases:
         failures.append(
             "correctness matrices differ: "
@@ -253,7 +249,7 @@ def validate_matrices(julia, python):
                 failures.append(
                     f"{runtime} input {key}: runtime={row.get('runtime')!r}"
                 )
-            grouped.setdefault(key[:3], []).append((key, row))
+            grouped.setdefault(key[:4], []).append((key, row))
         for case, checkpoints in sorted(grouped.items()):
             _, baseline = checkpoints[0]
             for key, row in checkpoints[1:]:
@@ -261,7 +257,7 @@ def validate_matrices(julia, python):
                     if row.get(field) != baseline.get(field):
                         failures.append(
                             f"{runtime} {case}: {field} changes at checkpoint "
-                            f"{key[3]}"
+                            f"{key[4]}"
                         )
 
     julia_terminal = _terminal_rows(julia)
@@ -276,7 +272,7 @@ def validate_matrices(julia, python):
                     f"Julia={julia_row.get(field)!r}, "
                     f"Python={python_row.get(field)!r}"
                 )
-        if julia_key[:3] != python_key[:3]:
+        if julia_key[:4] != python_key[:4]:
             failures.append(f"terminal comparison keys differ for {case}")
     return failures
 
@@ -296,11 +292,19 @@ def main(julia_path, python_path):
         )
     worst_group, worst = max(
         summaries.items(),
-        key=lambda item: item[1]["upper_bound"],
+        key=lambda item: item[1]["worst_difference"],
     )
+    for group, summary in sorted(summaries.items()):
+        print(
+            f"{group}: Julia median={summary['julia_median']:.6g}; "
+            f"Python median={summary['python_median']:.6g}; "
+            f"within threshold={summary['passed_rotations']}/"
+            f"{summary['rotations']}"
+        )
     print(
         f"validated {len(summaries)} native solver/problem groups; "
-        f"worst upper bound={worst['upper_bound']:.6g} for {worst_group}"
+        f"worst median log-regret difference={worst['worst_difference']:.6g} "
+        f"for {worst_group}"
     )
 
 

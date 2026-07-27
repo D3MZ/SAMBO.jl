@@ -80,8 +80,10 @@ export DelaunayTopology, KNearestTopology, ComplexConstructionError
 export PatternSearch, QuasiNewtonSearch
 export MinimizeEveryRefinement, MinimizeAtTermination
 export RandomShiftedSampling, GlobalBoxLocalBounds, TopographicalLocalBounds
-export UniformDesign, LatinHypercubeDesign, HaltonDesign, SobolDesign
-export GaussianProcessSurrogate, LowerConfidenceBound
+export BestLocalStarts, FarthestFromLatestMinimum
+export PythonSAMBOProfile
+export UniformDesign, LatinHypercubeDesign, HaltonDesign, ScrambledHaltonDesign, SobolDesign
+export GaussianProcessSurrogate, LowerConfidenceBound, RandomizedLowerConfidenceBound
 export GreedyMean, DistanceUncertainty, clone_surrogate
 export fitmodel, predictmean!, predictmeanvariance!, predictionworkspace
 export AutomaticLengthScale, IsotropicLengthScale, ARDLengthScale, GeometricJitter

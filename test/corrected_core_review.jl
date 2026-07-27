@@ -127,7 +127,11 @@ SAMBO.repair!(
 
     @testset "QMC continuation" begin
         space = Box(zeros(2), ones(2))
-        for design in (SobolDesign(), HaltonDesign(skip=0))
+        for design in (
+            SobolDesign(),
+            HaltonDesign(skip=0),
+            ScrambledHaltonDesign(seed=0x1234),
+        )
             whole = Matrix{Float64}(undef, 2, 16)
             left = Matrix{Float64}(undef, 2, 8)
             right = Matrix{Float64}(undef, 2, 8)

@@ -18,6 +18,7 @@ FIELDS = (
     "python_sambo_version",
     "problem",
     "algorithm",
+    "rotation_id",
     "trial_id",
     "configuration_hash",
     "initial_design_hash",
@@ -31,7 +32,7 @@ FIELDS = (
 )
 
 
-def result_row(runtime, trial_id=1, **overrides):
+def result_row(runtime, rotation_id=1, trial_id=1, **overrides):
     row = {
         "runtime": runtime,
         "runtime_version": "test-runtime",
@@ -40,9 +41,12 @@ def result_row(runtime, trial_id=1, **overrides):
         "problem": "sphere",
         "algorithm": "SMBO",
         "trial_id": trial_id,
-        "configuration_hash": "native-noninferiority-v3:SMBO:100",
-        "initial_design_hash": f"design-{trial_id}",
-        "initial_design_capability": "injected-x0-y0",
+        "rotation_id": rotation_id,
+        "configuration_hash": (
+            "python-sambo-1.25.2-matched-v5:SMBO:100:6-rotations"
+        ),
+        "initial_design_hash": f"design-{rotation_id}-{trial_id}",
+        "initial_design_capability": "injected-counted-lhs",
         "budget": 100,
         "evaluation": 100,
         "evaluations": 100,
@@ -54,14 +58,20 @@ def result_row(runtime, trial_id=1, **overrides):
     return row
 
 
-def trial_rows(runtime, minima, **overrides):
+def trial_rows(runtime, minima, rotations=range(1, 7), **overrides):
     rows = []
-    for index, value in enumerate(minima, start=1):
-        row_overrides = dict(overrides)
-        row_overrides.setdefault("minimum", value)
-        rows.append(
-            result_row(runtime, trial_id=index, **row_overrides)
-        )
+    for rotation_id in rotations:
+        for index, value in enumerate(minima, start=1):
+            row_overrides = dict(overrides)
+            row_overrides.setdefault("minimum", value)
+            rows.append(
+                result_row(
+                    runtime,
+                    rotation_id=rotation_id,
+                    trial_id=index,
+                    **row_overrides,
+                )
+            )
     return rows
 
 
@@ -102,10 +112,29 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "noninferiority"):
             compare.main(*paths)
 
+    def test_row_pass_count_is_rotation_level(self):
+        julia_rows = trial_rows("Julia", [0.1] * 10)
+        for row in julia_rows:
+            if row["rotation_id"] == 6:
+                row["minimum"] = 1.0
+        paths = self.paired_paths(
+            julia_rows,
+            trial_rows("Python", [0.1] * 10),
+        )
+        failures, summaries = compare.noninferiority_gate(
+            compare.read_results(paths[0]),
+            compare.read_results(paths[1]),
+        )
+        self.assertTrue(failures)
+        self.assertEqual(
+            summaries[("sphere", "SMBO")]["passed_rotations"],
+            5,
+        )
+
     def test_relative_regret_is_not_clipped(self):
         julia = result_row("Julia", minimum=10.0)
         python = result_row("Python", minimum=0.1)
-        key = ("sphere", "SMBO", 1, 100)
+        key = ("sphere", "SMBO", 1, 1, 100)
         self.assertAlmostEqual(
             compare.normalized_log_regret(julia, key)
             - compare.normalized_log_regret(python, key),
@@ -120,14 +149,22 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "at least 10 trials"):
             compare.main(*paths)
 
-    def test_bootstrap_bound_is_reproducible(self):
-        upper = compare.bootstrap_median_difference_upper(
-            [-1.0] * 10,
-            [0.0] * 10,
-            samples=100,
-            seed=7,
+    def test_all_six_rotations_are_required(self):
+        paths = self.paired_paths(
+            trial_rows("Julia", [0.1] * 10, rotations=range(1, 6)),
+            trial_rows("Python", [0.1] * 10, rotations=range(1, 6)),
         )
-        self.assertEqual(upper, -1.0)
+        with self.assertRaisesRegex(SystemExit, "requires 6 rotations"):
+            compare.main(*paths)
+
+    def test_numerical_regret_floor_ignores_sub_tolerance_noise(self):
+        julia = result_row("Julia", minimum=1e-9)
+        python = result_row("Python", minimum=1e-12)
+        key = ("sphere", "SMBO", 1, 1, 100)
+        self.assertEqual(
+            compare.normalized_log_regret(julia, key),
+            compare.normalized_log_regret(python, key),
+        )
 
     def test_runtime_metadata_must_match(self):
         for field in compare.MATCHED_METADATA:
@@ -142,7 +179,7 @@ class ComparatorTests(unittest.TestCase):
     def test_trial_matrices_must_match(self):
         paths = self.paired_paths(
             trial_rows("Julia", [0.1] * 10),
-            trial_rows("Python", [0.1] * 4),
+            trial_rows("Python", [0.1] * 10, rotations=range(1, 6)),
         )
         with self.assertRaisesRegex(SystemExit, "matrices differ"):
             compare.main(*paths)

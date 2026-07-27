@@ -7,8 +7,10 @@ import sys
 import numpy as np
 import sambo
 from sambo import minimize
+from scipy.stats.qmc import Halton
 
 DEFAULT_TRIALS = range(1, 11)
+ROTATION_IDS = range(1, 7)
 SOURCE_COMMIT = os.environ.get("GITHUB_SHA")
 if not SOURCE_COMMIT:
     try:
@@ -33,15 +35,6 @@ if not SOURCE_COMMIT:
     except (OSError, subprocess.CalledProcessError):
         SOURCE_COMMIT = "unknown"
 
-ROTATION = np.array(
-    [
-        [-0.6593804733957869, 0.40611875581020845, 0.16266300278010432, 0.5752843417117289, 0.20705946293608232],
-        [-0.39562828403747224, -0.5245384304015962, 0.2924634597652826, 0.08246149657099422, -0.6899296501722388],
-        [-0.19781414201873612, -0.43686232517528023, -0.8254056738772803, 0.26904408514342243, 0.12783437659867097],
-        [-0.5934424260562083, 0.17345445925725733, -0.1921454429053599, -0.7612651988361476, 0.03598698837021451],
-        [-0.13187609467915742, -0.5822300667409905, 0.4120576106936707, -0.10167893122409566, 0.6807986232723334],
-    ]
-)
 SHIFT = np.array([0.35, -0.55, 0.8, -0.25, 0.6])
 HARTMANN6_MINIMIZER = np.array(
     [0.20169, 0.150011, 0.476874, 0.275332, 0.311652, 0.6573]
@@ -70,67 +63,169 @@ def hartmann6(x):
     return -np.sum(alpha * np.exp(-np.sum(a * (x - p) ** 2, axis=1)))
 
 
-def transformed(x):
-    return ROTATION @ (np.asarray(x) - SHIFT)
+def challenge_rotation(dimensions, rotation_id):
+    rotation = np.eye(dimensions)
+    offset = (rotation_id - 1) % (dimensions - 1) + 1
+    for axis in range(dimensions):
+        other = (axis + offset) % dimensions
+        angle = ((rotation_id * (2 * (axis + 1) + 1)) % 19 + 1) * np.pi / 37
+        cosine = np.cos(angle)
+        sine = np.sin(angle)
+        left = rotation[axis].copy()
+        right = rotation[other].copy()
+        rotation[axis] = cosine * left - sine * right
+        rotation[other] = sine * left + cosine * right
+    return rotation
 
 
-def rotated_rastrigin(x):
-    y = transformed(x)
+def transformed(x, rotation):
+    return rotation @ (np.asarray(x) - SHIFT)
+
+
+def rotated_rastrigin(x, rotation):
+    y = transformed(x, rotation)
     return 10 * len(y) + np.sum(y**2 - 10 * np.cos(2 * np.pi * y))
 
 
-def rotated_rosenbrock(x):
-    y = transformed(x) + 1
+def rotated_rosenbrock(x, rotation):
+    y = transformed(x, rotation) + 1
     return np.sum(100 * (y[1:] - y[:-1] ** 2) ** 2 + (1 - y[:-1]) ** 2)
 
 
-CASES = (
-    (
-        "hartmann6",
-        hartmann6,
-        [(0.0, 1.0)] * 6,
-        -3.322368011415515,
-    ),
-    (
-        "rotated_rastrigin5",
-        rotated_rastrigin,
-        [(-5.12, 5.12)] * 5,
-        0.0,
-    ),
-    (
-        "rotated_rosenbrock5",
-        rotated_rosenbrock,
-        [(-3.0, 3.0)] * 5,
-        0.0,
-    ),
-)
+def oriented_hartmann6(x, rotation_id):
+    oriented = np.empty(6)
+    for axis in range(6):
+        source = (axis + rotation_id - 1) % 6
+        reflected = (axis + 1 + rotation_id) % 2 == 0
+        oriented[axis] = 1 - x[source] if reflected else x[source]
+    return hartmann6(oriented)
+
+
+def hartmann_preimage(point, rotation_id):
+    preimage = np.empty(6)
+    for axis in range(6):
+        source = (axis + rotation_id - 1) % 6
+        reflected = (axis + 1 + rotation_id) % 2 == 0
+        preimage[source] = 1 - point[axis] if reflected else point[axis]
+    return preimage
+
+
+def canonical_objective(objective, physical_bounds):
+    lower = np.array([bound[0] for bound in physical_bounds], dtype=float)
+    widths = np.array(
+        [bound[1] - bound[0] for bound in physical_bounds],
+        dtype=float,
+    )
+    return lambda latent: objective(lower + np.asarray(latent) * widths)
+
+
+def benchmark_cases():
+    cases = []
+    for rotation_id in ROTATION_IDS:
+        rotation = challenge_rotation(5, rotation_id)
+        rastrigin_bounds = [(-5.12, 5.12)] * 5
+        rosenbrock_bounds = [(-3.0, 3.0)] * 5
+        cases.extend(
+            (
+                (
+                    "hartmann6",
+                    rotation_id,
+                    lambda x, rid=rotation_id: oriented_hartmann6(x, rid),
+                    [(0.0, 1.0)] * 6,
+                    -3.322368011415515,
+                ),
+                (
+                    "rotated_rastrigin5",
+                    rotation_id,
+                    canonical_objective(
+                        lambda x, matrix=rotation: rotated_rastrigin(x, matrix),
+                        rastrigin_bounds,
+                    ),
+                    [(0.0, 1.0)] * 5,
+                    0.0,
+                ),
+                (
+                    "rotated_rosenbrock5",
+                    rotation_id,
+                    canonical_objective(
+                        lambda x, matrix=rotation: rotated_rosenbrock(x, matrix),
+                        rosenbrock_bounds,
+                    ),
+                    [(0.0, 1.0)] * 5,
+                    0.0,
+                ),
+            )
+        )
+    return tuple(cases)
+
+
+CASES = benchmark_cases()
 ALGORITHMS = (
     ("SCE-UA", "sceua", 1000),
-    ("SMBO", "smbo", 300),
+    ("SMBO", "smbo", 100),
     ("SHGO", "shgo", 1000),
 )
 
 
-def shared_initial_point(problem, bounds, trial_id):
-    latent = np.array(
+def shared_initial_design(dimensions, count, rotation_id, trial_id):
+    design = np.empty((count, dimensions))
+    for axis in range(dimensions):
+        multiplier = 2 * (axis + 1) + trial_id + rotation_id
+        while np.gcd(multiplier, count) != 1:
+            multiplier += 1
+        offset = (
+            trial_id * (11 + 2 * axis)
+            + rotation_id * (17 + axis)
+        ) % count
+        for column in range(count):
+            stratum = (multiplier * column + offset) % count
+            jitter = (
+                trial_id * 101
+                + rotation_id * 211
+                + (axis + 1) * 307
+                + (column + 1) * 401
+            ) % 997 / 997
+            design[column, axis] = (stratum + jitter) / count
+    return design
+
+
+def shared_halton_shift(dimensions, rotation_id, trial_id):
+    return np.array(
         [
-            (trial_id * (2 * (axis + 1) + 1) % 17) / 17
-            for axis in range(len(bounds))
+            (
+                trial_id * 127
+                + rotation_id * 283
+                + (axis + 1) * 419
+            ) % 997 / 997
+            for axis in range(dimensions)
         ]
     )
-    lower = np.array([bound[0] for bound in bounds], dtype=float)
-    upper = np.array([bound[1] for bound in bounds], dtype=float)
-    return lower + latent * (upper - lower)
 
 
-def initial_design_hash(problem, trial_id):
-    return f"shared-design-v1:{problem}:{trial_id}"
+class SharedShiftedHalton:
+    def __init__(self, dimensions, rotation_id, trial_id):
+        self.sampler = Halton(dimensions, scramble=False)
+        self.sampler.fast_forward(1)
+        self.shift = shared_halton_shift(
+            dimensions,
+            rotation_id,
+            trial_id,
+        )
+
+    def __call__(self, count, dimensions):
+        if dimensions != len(self.shift):
+            raise ValueError("SHGO sampler dimension changed")
+        return (self.sampler.random(count) + self.shift) % 1
+
+
+def initial_design_hash(problem, rotation_id, trial_id):
+    return f"shared-counted-lhs-v3:{problem}:{rotation_id}:{trial_id}"
 
 
 def shared_design_capability(algorithm):
     return (
-        "injected-x0-y0"
-        if algorithm == "SMBO"
+        "injected-counted-lhs"
+        if algorithm in ("SCE-UA", "SMBO")
         else "not-supported-cross-runtime"
     )
 
@@ -139,14 +234,58 @@ def benchmark_trials(algorithm, trials):
     return tuple(trials)
 
 
+def matched_method_kwargs(algorithm, dimensions, budget):
+    if algorithm == "SCE-UA":
+        return {
+            "complex_size": 2,
+            "n_complexes": min(
+                max(2, budget // 2 - 1),
+                max(5, int(3 * np.log2(dimensions))),
+            ),
+            "n_iter_no_change": 30,
+            "tol": 1e-6,
+            "x_tol": 1e-6,
+        }
+    if algorithm == "SMBO":
+        return {
+            "n_init": min(
+                max(1, budget - 20),
+                int(40 * dimensions * max(1, np.log2(dimensions))),
+            ),
+            "n_candidates": 1,
+            "n_iter_no_change": 5,
+            "tol": 1e-6,
+        }
+    if algorithm == "SHGO":
+        return {
+            "sampling_method": "halton",
+            "n_init": min(budget // 2, max(80, 2**dimensions + 1)),
+            "n_iter_no_change": 30,
+            "tol": 1e-6,
+        }
+    raise ValueError(f"unknown matched algorithm: {algorithm}")
+
+
 def normalized_gap(value, optimum):
     return max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
 
 
 def main(trials=DEFAULT_TRIALS):
     assert abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6
-    assert rotated_rastrigin(SHIFT) == 0
-    assert rotated_rosenbrock(SHIFT) == 0
+    for rotation_id in ROTATION_IDS:
+        assert (
+            abs(
+                oriented_hartmann6(
+                    hartmann_preimage(HARTMANN6_MINIMIZER, rotation_id),
+                    rotation_id,
+                )
+                + 3.322368011415515
+            )
+            < 1e-6
+        )
+        rotation = challenge_rotation(5, rotation_id)
+        assert rotated_rastrigin(SHIFT, rotation) == 0
+        assert rotated_rosenbrock(SHIFT, rotation) == 0
     writer = csv.writer(sys.stdout, lineterminator="\n")
     writer.writerow(
         (
@@ -156,6 +295,7 @@ def main(trials=DEFAULT_TRIALS):
             "python_sambo_version",
             "problem",
             "algorithm",
+            "rotation_id",
             "trial_id",
             "configuration_hash",
             "initial_design_hash",
@@ -174,17 +314,13 @@ def main(trials=DEFAULT_TRIALS):
             "retcode",
         )
     )
-    for problem, objective, bounds, optimum in CASES:
+    for problem, rotation_id, objective, bounds, optimum in CASES:
         for algorithm, method, budget in ALGORITHMS:
             for trial_id in benchmark_trials(algorithm, trials):
-                initial_point = shared_initial_point(
-                    problem,
-                    bounds,
-                    trial_id,
-                )
-                initial_value = float(objective(initial_point))
                 design_capability = shared_design_capability(algorithm)
-                supports_shared_design = design_capability == "injected-x0-y0"
+                supports_shared_design = (
+                    design_capability == "injected-counted-lhs"
+                )
                 evaluation_trace = []
 
                 def counted_objective(point):
@@ -194,14 +330,33 @@ def main(trials=DEFAULT_TRIALS):
                     )
                     return value
 
-                initial_kwargs = (
-                    {"x0": [initial_point], "y0": [initial_value]}
-                    if supports_shared_design
-                    else {}
+                method_kwargs = matched_method_kwargs(
+                    algorithm,
+                    len(bounds),
+                    budget,
                 )
-                method_kwargs = (
-                    {"sampling_method": "halton"}
-                    if algorithm == "SHGO"
+                if algorithm == "SHGO":
+                    method_kwargs["sampling_method"] = SharedShiftedHalton(
+                        len(bounds),
+                        rotation_id,
+                        trial_id,
+                    )
+                initial_count = (
+                    method_kwargs["n_complexes"]
+                    * method_kwargs["complex_size"]
+                    if algorithm == "SCE-UA"
+                    else method_kwargs.get("n_init", 0)
+                )
+                initial_kwargs = (
+                    {
+                        "x0": shared_initial_design(
+                            len(bounds),
+                            initial_count,
+                            rotation_id,
+                            trial_id,
+                        )
+                    }
+                    if supports_shared_design
                     else {}
                 )
                 result = minimize(
@@ -218,10 +373,11 @@ def main(trials=DEFAULT_TRIALS):
                         "Python objective calls exceeded the requested budget"
                     )
                 configuration_hash = (
-                    f"native-noninferiority-v3:{algorithm}:{budget}"
+                    f"python-sambo-1.25.2-matched-v5:{algorithm}:{budget}:"
+                    "6-rotations"
                 )
                 design_hash = (
-                    initial_design_hash(problem, trial_id)
+                    initial_design_hash(problem, rotation_id, trial_id)
                     if supports_shared_design
                     else "none"
                 )
@@ -248,6 +404,7 @@ def main(trials=DEFAULT_TRIALS):
                             getattr(sambo, "__version__", "unknown"),
                             problem,
                             algorithm,
+                            rotation_id,
                             trial_id,
                             configuration_hash,
                             design_hash,

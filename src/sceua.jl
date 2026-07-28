@@ -55,6 +55,8 @@ mutable struct SCEUAWorkspace{TX,TY}
     scratch_values::Vector{TY}
     members::Vector{Int}
     centroid::Vector{TX}
+    proposal::Vector{TX}
+    proposal_matrix::Matrix{TX}
     initialized::Bool
     finite_feasible::Union{Nothing,Vector{Int}}
     occupied::BitSet
@@ -90,6 +92,7 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
         (core.retcode = :infeasible_space)
     TX = eltype(core.trace.latent_points)
     TY = eltype(core.trace.objective_values)
+    proposal_matrix = Matrix{TX}(undef, d, 1)
     workspace = SCEUAWorkspace(
         Matrix{TX}(undef, d, population_size),
         Vector{TY}(undef, population_size),
@@ -98,6 +101,8 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
         Vector{TY}(undef, population_size + 1),
         Vector{Int}(undef, population_size + 1),
         Vector{TX}(undef, d),
+        vec(proposal_matrix),
+        proposal_matrix,
         false,
         finite_feasible,
         BitSet(),
@@ -314,9 +319,9 @@ function step!(state::SCEUAState)
     complexes = min(workspace.complexes, population_size)
     theta = _sceua_theta(core.problem.space)
     members = workspace.members
-    proposal_matrix =
-        @view workspace.scratch_population[:, population_size+1:population_size+1]
-    proposal = @view proposal_matrix[:, 1]
+    proposal = workspace.proposal
+    proposal_matrix = workspace.proposal_matrix
+    best = @view workspace.population[:, 1]
     core.iteration += 1
     evolved = false
     for complex_index in 1:complexes
@@ -339,7 +344,7 @@ function step!(state::SCEUAState)
         @. proposal =
             centroid + state.algorithm.reflection * (centroid - worst)
         @. proposal = (1 - theta) * proposal +
-            theta * workspace.population[:, 1]
+            theta * best
         repair!(
             core.rng,
             proposal,
@@ -365,7 +370,7 @@ function step!(state::SCEUAState)
             @. proposal =
                 worst + state.algorithm.contraction * (centroid - worst)
             @. proposal = (1 - theta) * proposal +
-                theta * workspace.population[:, 1]
+                theta * best
             repair!(
                 core.rng,
                 proposal,

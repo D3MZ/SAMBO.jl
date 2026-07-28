@@ -333,83 +333,36 @@ function _optimize_rbf_hyperparameters(points, values, noise)
     lower = T[log(T(0.1)); fill(log(T(0.01)), size(points, 1))]
     upper = T[log(T(10)); fill(log(T(100)), size(points, 1))]
     parameters = zeros(T, size(points, 1) + 1)
-    value, gradient = _rbf_nll_gradient(parameters, points, values, noise)
-    steps = Vector{Vector{T}}()
-    gradient_steps = Vector{Vector{T}}()
-    inverse_curvatures = T[]
-    memory = 10
-    for _ in 1:40
-        projected = copy(gradient)
-        for index in eachindex(projected)
-            at_lower = parameters[index] <= lower[index] + sqrt(eps(T))
-            at_upper = parameters[index] >= upper[index] - sqrt(eps(T))
-            (at_lower && projected[index] > 0) && (projected[index] = 0)
-            (at_upper && projected[index] < 0) && (projected[index] = 0)
+    cached_point = similar(parameters)
+    cached_value = Ref(zero(T))
+    cached_gradient = Ref{Union{Nothing,Vector{T}}}(nothing)
+    evaluate = function(candidate, gradient_required)
+        if gradient_required &&
+                !isnothing(cached_gradient[]) &&
+                candidate == cached_point
+            gradient = cached_gradient[]
+            cached_gradient[] = nothing
+            return cached_value[], gradient, 0
         end
-        maximum(abs, projected) <= T(1e-5) && break
-        direction = copy(projected)
-        coefficients = Vector{T}(undef, length(steps))
-        for history in length(steps):-1:1
-            coefficients[history] =
-                inverse_curvatures[history] * dot(steps[history], direction)
-            direction .-= coefficients[history] .* gradient_steps[history]
+        value, gradient =
+            _rbf_nll_gradient(candidate, points, values, noise)
+        if !gradient_required
+            copyto!(cached_point, candidate)
+            cached_value[] = value
+            cached_gradient[] = gradient
         end
-        if !isempty(steps)
-            last_step = steps[end]
-            last_gradient_step = gradient_steps[end]
-            direction .*= dot(last_step, last_gradient_step) /
-                dot(last_gradient_step, last_gradient_step)
-        end
-        for history in eachindex(steps)
-            coefficient =
-                inverse_curvatures[history] *
-                dot(gradient_steps[history], direction)
-            direction .+=
-                (coefficients[history] - coefficient) .* steps[history]
-        end
-        direction .*= -one(T)
-        dot(direction, projected) < 0 || (direction .= -projected)
-        step_length = one(T)
-        accepted = false
-        candidate = similar(parameters)
-        candidate_value = value
-        candidate_gradient = gradient
-        slope = dot(projected, direction)
-        for _ in 1:16
-            @. candidate = clamp(
-                parameters + step_length * direction,
-                lower,
-                upper,
-            )
-            candidate == parameters && break
-            candidate_value, candidate_gradient =
-                _rbf_nll_gradient(candidate, points, values, noise)
-            if isfinite(candidate_value) &&
-                    candidate_value <= value + T(1e-4) *
-                    dot(gradient, candidate - parameters)
-                accepted = true
-                break
-            end
-            step_length /= 2
-        end
-        accepted || break
-        parameter_step = candidate - parameters
-        gradient_step = candidate_gradient - gradient
-        curvature = dot(parameter_step, gradient_step)
-        if curvature > sqrt(eps(T)) * norm(parameter_step) * norm(gradient_step)
-            length(steps) == memory && begin
-                popfirst!(steps)
-                popfirst!(gradient_steps)
-                popfirst!(inverse_curvatures)
-            end
-            push!(steps, parameter_step)
-            push!(gradient_steps, gradient_step)
-            push!(inverse_curvatures, inv(curvature))
-        end
-        parameters = candidate
-        value = candidate_value
-        gradient = candidate_gradient
+        return value, gradient_required ? gradient : nothing, 1
     end
+    parameters, _, _ = _bounded_bfgs(
+        evaluate,
+        parameters,
+        lower,
+        upper;
+        max_iterations=40,
+        gradient_tolerance=T(1e-5),
+        minimum_step=T(2)^-15,
+        displacement_tolerance=zero(T),
+    )
     return clamp(exp(parameters[1]), T(0.1), T(10)),
         clamp.(exp.(parameters[2:end]), T(0.01), T(100))
 end

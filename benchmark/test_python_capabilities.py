@@ -104,7 +104,7 @@ class PythonCapabilityTests(unittest.TestCase):
         )
         self.assertEqual(
             correctness.shared_design_capability("SHGO"),
-            "not-supported-cross-runtime",
+            "not-applicable",
         )
         first = correctness.shared_initial_design(5, 12, 2, 3)
         second = correctness.shared_initial_design(5, 12, 2, 3)
@@ -112,6 +112,35 @@ class PythonCapabilityTests(unittest.TestCase):
         np.testing.assert_array_equal(first, second)
         self.assertFalse(np.array_equal(first, different))
         self.assertTrue(np.all((0 <= first) & (first <= 1)))
+        self.assertEqual(
+            correctness.coordinate_hash(first),
+            correctness.coordinate_hash(second),
+        )
+        self.assertNotEqual(
+            correctness.coordinate_hash(first),
+            correctness.coordinate_hash(different),
+        )
+
+    def test_shgo_sampling_stream_metadata_hashes_actual_coordinates(self):
+        self.assertEqual(
+            correctness.sampling_stream_capability("SHGO"),
+            "shared-shifted-halton",
+        )
+        self.assertEqual(
+            correctness.sampling_stream_capability("SMBO"),
+            "not-applicable",
+        )
+        first = correctness.shared_sampling_stream(5, 100, 2, 3)
+        second = correctness.shared_sampling_stream(5, 100, 2, 3)
+        different = correctness.shared_sampling_stream(5, 100, 2, 4)
+        self.assertEqual(
+            correctness.coordinate_hash(first),
+            correctness.coordinate_hash(second),
+        )
+        self.assertNotEqual(
+            correctness.coordinate_hash(first),
+            correctness.coordinate_hash(different),
+        )
 
 if __name__ == "__main__":
     unittest.main()

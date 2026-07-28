@@ -74,7 +74,7 @@ end
 @testset "topological multistart uncovered branches" begin
     seeded = init(
         Problem(x -> sum(abs2, x), Box([-1.0], [1.0])),
-        TopologicalMultistart(samples=3, local_starts=1);
+        SAMBO.TopologicalMultistart(samples=3, local_starts=1);
         initial_points=[[-0.75], [0.25]],
         initial_values=[0.5625, 0.0625],
         maximum_evaluations=3,
@@ -86,7 +86,7 @@ end
 
     restarted = init(
         Problem(_ -> 1.0, Box([0.0], [1.0])),
-        TopologicalMultistart(
+        SAMBO.TopologicalMultistart(
             samples=2,
             local_starts=1,
             local_solver=SAMBO.PatternSearch(
@@ -109,7 +109,7 @@ end
             Box([0.0], [1.0]);
             constraint=x -> false,
         ),
-        TopologicalMultistart(samples=2);
+        SAMBO.TopologicalMultistart(samples=2);
         maximum_evaluations=3,
         rng=MersenneTwister(813),
     )
@@ -271,7 +271,7 @@ end
 
     multiple_starts = init(
         Problem(x -> x[1]^2, Box([0.0], [1.0])),
-        TopologicalMultistart(samples=4, local_starts=2);
+        SAMBO.TopologicalMultistart(samples=4, local_starts=2);
         maximum_evaluations=8,
         rng=MersenneTwister(827),
     )

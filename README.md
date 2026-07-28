@@ -50,7 +50,7 @@ problem = Problem(f, Box(lower, upper))
 solve(problem, SCEUA(); maximum_evaluations=500)
 solve(problem, SMBO(); maximum_evaluations=500)
 solve(problem, SHGO(); maximum_evaluations=500)
-solve(problem, TopologicalMultistart(); maximum_evaluations=500)
+solve(problem, SAMBO.TopologicalMultistart(); maximum_evaluations=500)
 ```
 
 External or distributed evaluations use identified ask/tell batches:
@@ -68,18 +68,18 @@ Algorithm behavior that changes semantics is explicit:
 
 ```julia
 smbo = SMBO(
-    refit_schedule=FixedRefit(4),
-    candidate_sampler=MixtureCandidates(
-        UniformCandidates(),
-        EliteGaussianCandidates(0.1);
+    refit_schedule=SAMBO.FixedRefit(4),
+    candidate_sampler=SAMBO.MixtureCandidates(
+        SAMBO.UniformCandidates(),
+        SAMBO.EliteGaussianCandidates(0.1);
         global_fraction=0.25,
     ),
-    candidate_equality=ApproximateCandidateEquality(1e-8),
+    candidate_equality=SAMBO.ApproximateCandidateEquality(1e-8),
 )
 
 shgo = SHGO(
-    topology=DelaunayTopology(),
-    minimization_schedule=MinimizeAtTermination(),
+    topology=SAMBO.DelaunayTopology(),
+    minimization_schedule=SAMBO.MinimizeAtTermination(),
 )
 
 gp = GaussianProcessSurrogate(
@@ -89,8 +89,8 @@ gp = GaussianProcessSurrogate(
 ```
 
 Candidate generators report shortfalls instead of silently switching samplers.
-`DelaunayTopology()` reports degenerate complexes instead of substituting a
-nearest-neighbor graph; choose `KNearestTopology(neighbors=8)` explicitly when that
+`SAMBO.DelaunayTopology()` reports degenerate complexes instead of substituting a
+nearest-neighbor graph; choose `SAMBO.KNearestTopology(neighbors=8)` explicitly when that
 topology is intended. Deterministic SurrogatesBase models use `GreedyMean()` or an
 explicit uncertainty wrapper such as `DistanceUncertainty(model)`.
 
@@ -160,7 +160,7 @@ ecosystem integrations and workflow APIs.
 | Mixed variables | `SearchSpace(n=0:9, x=Continuous(0, 1), kind=Choices(:a, :b))` | `bounds=[(0, 10), (0., 1.), ("a", "b")]` |
 | Constraints | `Problem(f, space; constraint=g)` | `minimize(f, bounds=bounds, constraints=g)` |
 | Ask/tell | `batch=ask!(state, n); tell!(state, batch, y)` | `x=opt.ask(n); opt.tell(y, x)` |
-| Parallel evaluation | `solve(problem, alg; executor=Threaded())` | `minimize(f, n_jobs=-1, ...)` |
+| Parallel evaluation | `solve(problem, alg; executor=SAMBO.Threaded())` | `minimize(f, n_jobs=-1, ...)` |
 | Tabular observations | `observations(result)` | × |
 | Diagnostic plots | `objectiveplot(result)` | `plot_objective(result)` |
 | Optimization.jl | `OptimizationBase.solve(problem, SCEUA())` | × |
@@ -195,17 +195,19 @@ Replace the saved files in `benchmark/results/` and run
 rotations. Within threshold counts rotations where Julia's median log regret is
 no more than 0.25 decades worse than Python's.</sub>
 
+<!-- correctness-table:start -->
 | Algorithm | Problem | Known optimum | Julia median | Python median | Within threshold |
 |---|---|---:|---:|---:|---:|
-| SCE-UA | Hartmann-6 | −3.322368 | −3.25922 | −3.22225 | 6/6 |
+| SCE-UA | Hartmann-6 | −3.32237 | −3.25922 | −3.22225 | 6/6 |
 | SCE-UA | Rotated Rastrigin-5 | 0 | 15.3486 | 16.3481 | 6/6 |
 | SCE-UA | Rotated Rosenbrock-5 | 0 | 4.98709 | 5.01705 | 6/6 |
-| SMBO | Hartmann-6 | −3.322368 | −2.3484 | −2.08296 | 6/6 |
+| SMBO | Hartmann-6 | −3.32237 | −2.3484 | −2.08296 | 6/6 |
 | SMBO | Rotated Rastrigin-5 | 0 | 36.0142 | 34.7514 | 6/6 |
 | SMBO | Rotated Rosenbrock-5 | 0 | 206.035 | 266.205 | 6/6 |
-| SHGO | Hartmann-6 | −3.322368 | −3.32237 | −3.32237 | 6/6 |
-| SHGO | Rotated Rastrigin-5 | 0 | 12.9344 | 17.9092 | 6/6 |
-| SHGO | Rotated Rosenbrock-5 | 0 | 1.09796e−09 | 5.47839e−08 | 6/6 |
+| SHGO | Hartmann-6 | −3.32237 | −3.32237 | −3.32237 | 6/6 |
+| SHGO | Rotated Rastrigin-5 | 0 | 10.9445 | 17.9092 | 6/6 |
+| SHGO | Rotated Rosenbrock-5 | 0 | 1.12496e−09 | 5.47839e−08 | 6/6 |
+<!-- correctness-table:end -->
 
 - Uses matched algorithm settings, objectives, bounds, evaluation budgets, trial
   identifiers, and six deterministic nonseparable rotations in both runtimes.

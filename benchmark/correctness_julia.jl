@@ -1,5 +1,7 @@
 using Random
 using LinearAlgebra
+using Printf
+using SHA
 using SAMBO
 
 const DEFAULT_TRIALS = 1:10
@@ -160,12 +162,11 @@ end
 const ALGORITHMS = (
     ("SCE-UA", python_sambo_sceua_profile, 1000),
     ("SMBO", () -> SMBO(), 100),
-    ("SHGO", () -> SHGO(PythonSAMBOProfile()), 1000),
+    ("SHGO", () -> SHGO(SAMBO.PythonSAMBOProfile()), 1000),
 )
 
-function shared_initial_design(case, count, trial_id)
+function shared_initial_latent(case, count, trial_id)
     dimensions = SAMBO.dimension(case.problem.space)
-    design = Vector{Vector{Float64}}(undef, count)
     latent = Matrix{Float64}(undef, dimensions, count)
     for axis in 1:dimensions
         multiplier = 2axis + trial_id + case.rotation_id
@@ -189,6 +190,12 @@ function shared_initial_design(case, count, trial_id)
             latent[axis, column] = (stratum + jitter) / count
         end
     end
+    return latent
+end
+
+function shared_initial_design(case, count, trial_id)
+    latent = shared_initial_latent(case, count, trial_id)
+    design = Vector{Vector{Float64}}(undef, count)
     for column in 1:count
         design[column] = decode(
             case.problem.space,
@@ -198,12 +205,24 @@ function shared_initial_design(case, count, trial_id)
     return design
 end
 
-initial_design_hash(case, trial_id) =
-    "shared-counted-lhs-v3:$(case.name):$(case.rotation_id):$trial_id"
+function coordinate_hash(coordinates)
+    bytes = IOBuffer()
+    first = true
+    for column in axes(coordinates, 2), axis in axes(coordinates, 1)
+        first || write(bytes, ',')
+        @printf(bytes, "%.12f", Float64(coordinates[axis, column]))
+        first = false
+    end
+    write(bytes, '\n')
+    return "sha256:" * bytes2hex(sha256(take!(bytes)))
+end
 
 shared_design_capability(algorithm_name) =
     algorithm_name in ("SCE-UA", "SMBO") ?
-    "injected-counted-lhs" : "not-supported-cross-runtime"
+    "injected-counted-lhs" : "not-applicable"
+
+sampling_stream_capability(algorithm_name) =
+    algorithm_name == "SHGO" ? "shared-shifted-halton" : "not-applicable"
 
 shared_halton_shift(dimensions, rotation_id, trial_id) = [
     mod(
@@ -215,13 +234,28 @@ shared_halton_shift(dimensions, rotation_id, trial_id) = [
     for axis in 1:dimensions
 ]
 
+function shared_sampling_stream(dimensions, budget, rotation_id, trial_id)
+    destination = Matrix{Float64}(undef, dimensions, budget)
+    design = SAMBO.FixedShiftDesign(
+        SAMBO.HaltonDesign(skip=0),
+        shared_halton_shift(dimensions, rotation_id, trial_id),
+    )
+    SAMBO.sample!(
+        Xoshiro(0),
+        destination,
+        design,
+        Box(zeros(dimensions), ones(dimensions)),
+    )
+    return destination
+end
+
 function matched_algorithm(algorithm_name, make_algorithm, case, trial_id)
     algorithm_name == "SHGO" || return make_algorithm()
     dimensions = SAMBO.dimension(case.problem.space)
     return SHGO(
-        PythonSAMBOProfile();
+        SAMBO.PythonSAMBOProfile();
         sampling=SAMBO.FixedShiftDesign(
-            HaltonDesign(skip=0),
+            SAMBO.HaltonDesign(skip=0),
             shared_halton_shift(
                 dimensions,
                 case.rotation_id,
@@ -258,15 +292,17 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
         io,
         "runtime,runtime_version,source_commit,python_sambo_version,problem,algorithm,",
         "rotation_id,trial_id,configuration_hash,initial_design_hash,",
-        "initial_design_capability,",
+        "initial_design_capability,sampling_stream_hash,",
+        "sampling_stream_capability,",
         "budget,evaluation,evaluations,iteration,best_value,normalized_gap,",
-        "minimum,optimum,noninferiority_margin,feasible,duplicate,retcode",
+        "minimum,optimum,quality_threshold,feasible,duplicate,retcode",
     )
     for case in CASES,
             (algorithm_name, make_algorithm, budget) in ALGORITHMS,
             trial_id in benchmark_trials(algorithm_name, trials)
         design_capability = shared_design_capability(algorithm_name)
         supports_shared_design = design_capability == "injected-counted-lhs"
+        sampling_capability = sampling_stream_capability(algorithm_name)
         result = if supports_shared_design
             dimensions = SAMBO.dimension(case.problem.space)
             initial_count = if algorithm_name == "SCE-UA"
@@ -312,32 +348,36 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
             )
         end
         configuration_hash =
-            "python-sambo-1.25.2-matched-v5:$algorithm_name:$budget:6-rotations"
+            "python-sambo-1.25.2-matched-v6:$algorithm_name:$budget:6-rotations"
         design_hash = supports_shared_design ?
-            initial_design_hash(case, trial_id) : "none"
+            coordinate_hash(shared_initial_latent(case, initial_count, trial_id)) :
+            "none"
+        sampling_hash = algorithm_name == "SHGO" ?
+            coordinate_hash(shared_sampling_stream(
+                SAMBO.dimension(case.problem.space),
+                budget,
+                case.rotation_id,
+                trial_id,
+            )) :
+            "none"
         best = Inf
-        seen = Set{Tuple}()
+        iteration = 0
         for index in 1:result.trace.count
             result.trace.source[index] == KnownObservation && continue
-            evaluation = result.trace.evaluation_numbers[index]
             value = result.trace.objective_values[index]
             best = min(best, value)
-            latent = @view result.trace.latent_points[:, index]
-            key = Tuple(latent)
-            duplicate = key in seen
-            push!(seen, key)
-            result_code =
-                evaluation == evaluation_count(result) ? retcode(result) : :running
-            println(
-                io,
-                "Julia,$VERSION,$SOURCE_COMMIT,n/a,$(case.name),$algorithm_name,",
-                "$(case.rotation_id),$trial_id,$configuration_hash,$design_hash,",
-                "$design_capability,$budget,",
-                "$evaluation,$evaluation,$(result.trace.iterations[index]),$best,",
-                "$(normalized_gap(best, case.optimum)),$best,$(case.optimum),",
-                "0.25,true,$duplicate,$result_code",
-            )
+            iteration = max(iteration, result.trace.iterations[index])
         end
+        evaluations = evaluation_count(result)
+        println(
+            io,
+            "Julia,$VERSION,$SOURCE_COMMIT,n/a,$(case.name),$algorithm_name,",
+            "$(case.rotation_id),$trial_id,$configuration_hash,$design_hash,",
+            "$design_capability,$sampling_hash,$sampling_capability,$budget,",
+            "$evaluations,$evaluations,$iteration,$best,",
+            "$(normalized_gap(best, case.optimum)),$best,$(case.optimum),",
+            "0.25,true,false,$(retcode(result))",
+        )
     end
 end
 

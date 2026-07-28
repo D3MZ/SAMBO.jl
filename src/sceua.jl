@@ -57,9 +57,6 @@ mutable struct SCEUAWorkspace{TX,TY}
     centroids::Matrix{TX}
     proposals::Matrix{TX}
     proposal_values::Vector{TY}
-    worst_indices::Vector{Int}
-    failed_indices::Vector{Int}
-    valid_indices::Vector{Int}
     initialized::Bool
     finite_feasible::Union{Nothing,Vector{Int}}
     occupied::BitSet
@@ -110,9 +107,6 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
         Matrix{TX}(undef, d, population_size),
         Matrix{TX}(undef, d, population_size),
         Vector{TY}(undef, population_size),
-        Vector{Int}(undef, population_size),
-        Vector{Int}(undef, population_size),
-        Vector{Int}(undef, population_size),
         false,
         finite_feasible,
         BitSet(),
@@ -238,52 +232,6 @@ end
 repair!(rng, proposal, ::ProjectToBounds, problem, centroid) =
     _project_feasible!(proposal, problem)
 
-function _complex_members(population_size, complexes, complex_index)
-    return collect(complex_index:complexes:population_size)
-end
-
-function _complex_centroid!(centroid, population, members, global_best)
-    worst = members[end]
-    fill!(centroid, zero(eltype(centroid)))
-    count = 0
-    if !(global_best in members[1:end-1])
-        centroid .+= @view population[:, global_best]
-        count += 1
-    end
-    for member in @view members[1:end-1]
-        centroid .+= @view population[:, member]
-        count += 1
-    end
-    centroid ./= count
-    return centroid
-end
-function _complex_centroid!(
-    centroid,
-    population,
-    population_size::Int,
-    complexes::Int,
-    complex_index::Int,
-    global_best::Int,
-)
-    worst = complex_index +
-        fld(population_size - complex_index, complexes) * complexes
-    worst == complex_index && return 0
-    fill!(centroid, zero(eltype(centroid)))
-    count = 0
-    contains_global_best = false
-    for member in complex_index:complexes:(worst - complexes)
-        centroid .+= @view population[:, member]
-        contains_global_best |= member == global_best
-        count += 1
-    end
-    if !contains_global_best
-        centroid .+= @view population[:, global_best]
-        count += 1
-    end
-    centroid ./= count
-    return worst
-end
-
 function _python_complex_members!(members, population_size, complexes, complex_index)
     count = 1
     members[count] = 1
@@ -314,9 +262,6 @@ function _contraction!(proposal, centroid, worst, coefficient)
     @. proposal = worst + coefficient * (centroid - worst)
     return proposal
 end
-
-_complex_indices(population_size, complexes, complex_index) =
-    _complex_members(population_size, complexes, complex_index)
 
 function _sceua_span(workspace, space)
     isempty(workspace.values) && return Inf

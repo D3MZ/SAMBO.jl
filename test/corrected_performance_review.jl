@@ -26,13 +26,13 @@ end
         SAMBO._sample_feasible!(
             rng,
             destination,
-            UniformDesign(),
+            SAMBO.UniformDesign(),
             problem,
         )
         bytes = @allocated SAMBO._sample_feasible!(
             rng,
             destination,
-            UniformDesign(),
+            SAMBO.UniformDesign(),
             problem,
         )
         @info "unconstrained sampling warm allocation" bytes
@@ -68,7 +68,7 @@ end
             SMBO(
                 initial_points=5,
                 candidate_pool=64,
-                refit_schedule=FixedRefit(100),
+                refit_schedule=SAMBO.FixedRefit(100),
             );
             maximum_evaluations=20,
             rng=Xoshiro(9),
@@ -107,7 +107,7 @@ end
                 SMBO(
                     acquisition=GreedyMean(),
                     batch_strategy=strategy,
-                    repeat_policy=AllowRepeatedEvaluations(),
+                    repeat_policy=SAMBO.AllowRepeatedEvaluations(),
                 );
                 initial_points=[(x=0.5,)],
                 initial_values=[0.5],
@@ -116,8 +116,8 @@ end
             )
             return SAMBO._select_candidates(state, candidates, 2)
         end
-        @test selected(GreedyBatch()) == reshape([0.0, 0.01], 1, :)
-        @test selected(LocalPenalization(strength=10.0, radius=0.1)) ==
+        @test selected(SAMBO.GreedyBatch()) == reshape([0.0, 0.01], 1, :)
+        @test selected(SAMBO.LocalPenalization(strength=10.0, radius=0.1)) ==
             reshape([0.0, 1.0], 1, :)
     end
 
@@ -160,7 +160,7 @@ end
     @testset "topological proposal workspace" begin
         state = init(
             Problem(_review_objective, Box(fill(-1.0, 2), fill(1.0, 2))),
-            TopologicalMultistart(samples=16, local_starts=4);
+            SAMBO.TopologicalMultistart(samples=16, local_starts=4);
             maximum_evaluations=80,
             rng=Xoshiro(13),
         )

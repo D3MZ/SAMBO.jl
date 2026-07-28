@@ -7,7 +7,7 @@ candidates = rand(MersenneTwister(430), 2, 4)
 values = zeros(4)
 JET.@test_opt target_modules=(SAMBO,) SAMBO.evaluate!(
     values,
-    Serial(),
+    SAMBO.Serial(),
     problem,
     candidates,
     ErrorOnNonfinite(),
@@ -52,7 +52,7 @@ smbo = init(
     SMBO(
         initial_points=5,
         candidate_pool=64,
-        refit_schedule=FixedRefit(100),
+        refit_schedule=SAMBO.FixedRefit(100),
     );
     maximum_evaluations=20,
     rng=MersenneTwister(433),

@@ -26,13 +26,13 @@ end
         for algorithm in (
             SCEUA(complexes=1, complex_size=3),
             SMBO(initial_points=3, candidate_pool=32),
-            TopologicalMultistart(
+            SAMBO.TopologicalMultistart(
                 samples=8,
-                topology=KNearestTopology(neighbors=2),
+                topology=SAMBO.KNearestTopology(neighbors=2),
             ),
             SHGO(
                 sampling_points=4,
-                topology=KNearestTopology(neighbors=2),
+                topology=SAMBO.KNearestTopology(neighbors=2),
                 local_budget=2,
             ),
         )
@@ -121,7 +121,7 @@ end
             @test bestpoint(solved) isa expected
         end
         problem = Problem(_ -> 0.0, space)
-        @test_throws ArgumentError init(problem, TopologicalMultistart())
+        @test_throws ArgumentError init(problem, SAMBO.TopologicalMultistart())
         @test_throws ArgumentError init(problem, SHGO())
     end
 
@@ -129,13 +129,13 @@ end
         for algorithm in (
             SCEUA(complexes=1, complex_size=3),
             SMBO(initial_points=3, candidate_pool=32),
-            TopologicalMultistart(
+            SAMBO.TopologicalMultistart(
                 samples=8,
-                topology=KNearestTopology(neighbors=2),
+                topology=SAMBO.KNearestTopology(neighbors=2),
             ),
             SHGO(
                 sampling_points=4,
-                topology=KNearestTopology(neighbors=2),
+                topology=SAMBO.KNearestTopology(neighbors=2),
                 local_budget=2,
             ),
         )
@@ -183,7 +183,7 @@ end
             SMBO(initial_points=3, batch_size=3);
             maximum_evaluations=3,
             rng=Xoshiro(104),
-            executor=Threaded(),
+            executor=SAMBO.Threaded(),
         )
         @test_throws CompositeException step!(threaded)
         @test evaluation_count(result(threaded)) == 0
@@ -254,7 +254,7 @@ end
             fixed=Choices(:only),
         )
         latent = Matrix{Float64}(undef, 3, 6_000)
-        SAMBO.sample!(Xoshiro(106), latent, UniformDesign(), space)
+        SAMBO.sample!(Xoshiro(106), latent, SAMBO.UniformDesign(), space)
         points = decode.(Ref(space), eachcol(latent))
         @test Set(point.count for point in points) == Set(0:2)
         @test Set(point.kind for point in points) == Set((:a, :b, :c))

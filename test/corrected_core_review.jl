@@ -37,7 +37,7 @@ SAMBO.repair!(
                 x -> sum(abs2, x),
                 Box(fill(-1.0, 2), fill(1.0, 2)),
             ),
-            TopologicalMultistart();
+            SAMBO.TopologicalMultistart();
             maximum_evaluations=2,
             rng=Xoshiro(2),
         )
@@ -128,9 +128,9 @@ SAMBO.repair!(
     @testset "QMC continuation" begin
         space = Box(zeros(2), ones(2))
         for design in (
-            SobolDesign(),
-            HaltonDesign(skip=0),
-            ScrambledHaltonDesign(seed=0x1234),
+            SAMBO.SobolDesign(),
+            SAMBO.HaltonDesign(skip=0),
+            SAMBO.ScrambledHaltonDesign(seed=0x1234),
         )
             whole = Matrix{Float64}(undef, 2, 16)
             left = Matrix{Float64}(undef, 2, 8)
@@ -181,10 +181,10 @@ SAMBO.repair!(
         )
         @test_throws ArgumentError SAMBO.QuasiNewtonSearch(minimum_step=0)
         @test_throws ArgumentError GeometricJitter(-1.0, 10.0, 8)
-        @test_throws ArgumentError LocalPenalization(-1.0, 0.1)
-        @test_throws ArgumentError MixtureCandidates(
-            UniformCandidates(),
-            EliteGaussianCandidates(),
+        @test_throws ArgumentError SAMBO.LocalPenalization(-1.0, 0.1)
+        @test_throws ArgumentError SAMBO.MixtureCandidates(
+            SAMBO.UniformCandidates(),
+            SAMBO.EliteGaussianCandidates(),
             2.0,
         )
         values = [0.2, 0.8]
@@ -201,11 +201,11 @@ SAMBO.repair!(
         @test SAMBO.automatic_sampling_count(64, 100) == 100
         @test_throws ArgumentError SAMBO.buildcomplex(
             BigFloat[0 1 0 1; 0 0 1 1],
-            DelaunayTopology(),
+            SAMBO.DelaunayTopology(),
         )
         @test_nowarn SAMBO.buildcomplex(
             BigFloat[0 1 0; 0 0 1],
-            KNearestTopology(neighbors=1),
+            SAMBO.KNearestTopology(neighbors=1),
         )
     end
 

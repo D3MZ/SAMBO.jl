@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import os
 import platform
 import subprocess
@@ -218,16 +219,33 @@ class SharedShiftedHalton:
         return (self.sampler.random(count) + self.shift) % 1
 
 
-def initial_design_hash(problem, rotation_id, trial_id):
-    return f"shared-counted-lhs-v3:{problem}:{rotation_id}:{trial_id}"
+def coordinate_hash(coordinates):
+    values = np.asarray(coordinates, dtype=np.float64, order="C").ravel(
+        order="C"
+    )
+    canonical = (",".join(f"{value:.12f}" for value in values) + "\n").encode()
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
 def shared_design_capability(algorithm):
     return (
         "injected-counted-lhs"
         if algorithm in ("SCE-UA", "SMBO")
-        else "not-supported-cross-runtime"
+        else "not-applicable"
     )
+
+
+def sampling_stream_capability(algorithm):
+    return (
+        "shared-shifted-halton"
+        if algorithm == "SHGO"
+        else "not-applicable"
+    )
+
+
+def shared_sampling_stream(dimensions, budget, rotation_id, trial_id):
+    sampler = SharedShiftedHalton(dimensions, rotation_id, trial_id)
+    return sampler(budget, dimensions)
 
 
 def benchmark_trials(algorithm, trials):
@@ -300,6 +318,8 @@ def main(trials=DEFAULT_TRIALS):
             "configuration_hash",
             "initial_design_hash",
             "initial_design_capability",
+            "sampling_stream_hash",
+            "sampling_stream_capability",
             "budget",
             "evaluation",
             "evaluations",
@@ -308,7 +328,7 @@ def main(trials=DEFAULT_TRIALS):
             "normalized_gap",
             "minimum",
             "optimum",
-            "noninferiority_margin",
+            "quality_threshold",
             "feasible",
             "duplicate",
             "retcode",
@@ -321,13 +341,15 @@ def main(trials=DEFAULT_TRIALS):
                 supports_shared_design = (
                     design_capability == "injected-counted-lhs"
                 )
-                evaluation_trace = []
+                sampling_capability = sampling_stream_capability(algorithm)
+                evaluations = 0
+                best = float("inf")
 
                 def counted_objective(point):
+                    nonlocal evaluations, best
                     value = float(objective(point))
-                    evaluation_trace.append(
-                        (np.asarray(point, dtype=float).copy(), value)
-                    )
+                    evaluations += 1
+                    best = min(best, value)
                     return value
 
                 method_kwargs = matched_method_kwargs(
@@ -347,16 +369,19 @@ def main(trials=DEFAULT_TRIALS):
                     if algorithm == "SCE-UA"
                     else method_kwargs.get("n_init", 0)
                 )
-                initial_kwargs = (
-                    {
-                        "x0": shared_initial_design(
-                            len(bounds),
-                            initial_count,
-                            rotation_id,
-                            trial_id,
-                        )
-                    }
+                initial_design = (
+                    shared_initial_design(
+                        len(bounds),
+                        initial_count,
+                        rotation_id,
+                        trial_id,
+                    )
                     if supports_shared_design
+                    else None
+                )
+                initial_kwargs = (
+                    {"x0": initial_design}
+                    if initial_design is not None
                     else {}
                 )
                 result = minimize(
@@ -368,61 +393,60 @@ def main(trials=DEFAULT_TRIALS):
                     **initial_kwargs,
                     **method_kwargs,
                 )
-                if len(evaluation_trace) > budget:
+                if evaluations > budget:
                     raise RuntimeError(
                         "Python objective calls exceeded the requested budget"
                     )
                 configuration_hash = (
-                    f"python-sambo-1.25.2-matched-v5:{algorithm}:{budget}:"
+                    f"python-sambo-1.25.2-matched-v6:{algorithm}:{budget}:"
                     "6-rotations"
                 )
                 design_hash = (
-                    initial_design_hash(problem, rotation_id, trial_id)
+                    coordinate_hash(initial_design)
                     if supports_shared_design
                     else "none"
                 )
-                best = float("inf")
-                seen = set()
-                for evaluation, (point, value) in enumerate(
-                    evaluation_trace,
-                    start=1,
-                ):
-                    best = min(best, value)
-                    point_key = tuple(point.tolist())
-                    duplicate = point_key in seen
-                    seen.add(point_key)
-                    result_code = (
-                        getattr(result, "message", "completed")
-                        if evaluation == len(evaluation_trace)
-                        else "running"
-                    )
-                    writer.writerow(
-                        (
-                            "Python",
-                            platform.python_version(),
-                            SOURCE_COMMIT,
-                            getattr(sambo, "__version__", "unknown"),
-                            problem,
-                            algorithm,
+                sampling_hash = (
+                    coordinate_hash(
+                        shared_sampling_stream(
+                            len(bounds),
+                            budget,
                             rotation_id,
                             trial_id,
-                            configuration_hash,
-                            design_hash,
-                            design_capability,
-                            budget,
-                            evaluation,
-                            evaluation,
-                            evaluation,
-                            f"{best:.17g}",
-                            f"{normalized_gap(best, optimum):.17g}",
-                            f"{best:.17g}",
-                            optimum,
-                            0.25,
-                            "true",
-                            str(duplicate).lower(),
-                            result_code,
                         )
                     )
+                    if algorithm == "SHGO"
+                    else "none"
+                )
+                writer.writerow(
+                    (
+                        "Python",
+                        platform.python_version(),
+                        SOURCE_COMMIT,
+                        getattr(sambo, "__version__", "unknown"),
+                        problem,
+                        algorithm,
+                        rotation_id,
+                        trial_id,
+                        configuration_hash,
+                        design_hash,
+                        design_capability,
+                        sampling_hash,
+                        sampling_capability,
+                        budget,
+                        evaluations,
+                        evaluations,
+                        evaluations,
+                        f"{best:.17g}",
+                        f"{normalized_gap(best, optimum):.17g}",
+                        f"{best:.17g}",
+                        optimum,
+                        0.25,
+                        "true",
+                        "false",
+                        getattr(result, "message", "completed"),
+                    )
+                )
 
 
 if __name__ == "__main__":

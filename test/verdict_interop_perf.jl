@@ -489,7 +489,7 @@ end
     @test occursin("JULIA_NUM_THREADS: 4", workflow)
     @test occursin("Core without weak dependencies", workflow)
     @test occursin("Cross-runtime solution-quality checks", workflow)
-    @test occursin("Native solver non-inferiority", workflow)
+    @test occursin("Matched cross-runtime quality threshold", workflow)
     @test !occursin("exact-v1", workflow)
     @test occursin("requirements-correctness.txt", workflow)
     @test occursin("Native inference checks", workflow)

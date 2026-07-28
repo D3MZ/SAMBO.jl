@@ -95,7 +95,7 @@ end
 
     topological = init(
         problem,
-        TopologicalMultistart(
+        SAMBO.TopologicalMultistart(
             samples=16,
             local_starts=4,
             local_solver=SAMBO.PatternSearch(),

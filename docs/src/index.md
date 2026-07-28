@@ -48,18 +48,18 @@ Semantic choices are values passed to the algorithms:
 
 ```julia
 SMBO(
-    refit_schedule=SquareRootRefit(2),
-    candidate_sampler=MixtureCandidates(
-        UniformCandidates(),
-        EliteGaussianCandidates(0.1);
+    refit_schedule=SAMBO.SquareRootRefit(2),
+    candidate_sampler=SAMBO.MixtureCandidates(
+        SAMBO.UniformCandidates(),
+        SAMBO.EliteGaussianCandidates(0.1);
         global_fraction=0.25,
     ),
-    candidate_equality=ApproximateCandidateEquality(1e-8),
+    candidate_equality=SAMBO.ApproximateCandidateEquality(1e-8),
 )
 
 SHGO(
-    topology=KNearestTopology(neighbors=8),
-    minimization_schedule=MinimizeAtTermination(),
+    topology=SAMBO.KNearestTopology(neighbors=8),
+    minimization_schedule=SAMBO.MinimizeAtTermination(),
 )
 ```
 

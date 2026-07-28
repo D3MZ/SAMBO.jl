@@ -4,18 +4,20 @@ import statistics
 import sys
 
 
-CONFIGURATION_PREFIX = "python-sambo-1.25.2-matched-v5:"
+CONFIGURATION_PREFIX = "python-sambo-1.25.2-matched-v6:"
 MINIMUM_TRIALS = 10
 REQUIRED_ROTATIONS = 6
 REGRET_FLOOR = 1e-6
 MATCHED_METADATA = (
     "budget",
     "optimum",
-    "noninferiority_margin",
+    "quality_threshold",
     "source_commit",
     "configuration_hash",
     "initial_design_hash",
     "initial_design_capability",
+    "sampling_stream_hash",
+    "sampling_stream_capability",
 )
 REQUIRED_COLUMNS = (
     "runtime",
@@ -28,12 +30,14 @@ REQUIRED_COLUMNS = (
     "configuration_hash",
     "initial_design_hash",
     "initial_design_capability",
+    "sampling_stream_hash",
+    "sampling_stream_capability",
     "budget",
     "evaluation",
     "evaluations",
     "minimum",
     "optimum",
-    "noninferiority_margin",
+    "quality_threshold",
 )
 
 
@@ -78,7 +82,6 @@ def read_results(path):
                 row["algorithm"],
                 _integer(row, "rotation_id", None),
                 _integer(row, "trial_id", None),
-                _integer(row, "evaluation", None),
             )
         except KeyError as error:
             _fail(f"missing comparison key field: {error.args[0]}")
@@ -86,10 +89,11 @@ def read_results(path):
             _fail(f"duplicate comparison key: {key}")
         budget = _integer(row, "budget", key)
         evaluations = _integer(row, "evaluations", key)
+        evaluation = _integer(row, "evaluation", key)
         budget > 0 or _fail(f"invalid budget for {key}")
-        evaluations == key[4] or _fail(
-            f"checkpoint/evaluations mismatch for {key}: "
-            f"checkpoint={key[4]}, evaluations={evaluations}"
+        evaluations == evaluation or _fail(
+            f"evaluation/evaluations mismatch for {key}: "
+            f"evaluation={evaluation}, evaluations={evaluations}"
         )
         0 < evaluations <= budget or _fail(
             f"evaluations outside budget for {key}: "
@@ -103,6 +107,8 @@ def read_results(path):
             "configuration_hash",
             "initial_design_hash",
             "initial_design_capability",
+            "sampling_stream_hash",
+            "sampling_stream_capability",
         ):
             if not row.get(field, "").strip():
                 _fail(f"missing {field} for {key}")
@@ -121,12 +127,7 @@ def read_results(path):
 
 
 def _terminal_rows(rows):
-    terminal = {}
-    for key, row in rows.items():
-        case = key[:4]
-        if case not in terminal or key[4] > terminal[case][0]:
-            terminal[case] = (key[4], key, row)
-    return {case: pair[1:] for case, pair in terminal.items()}
+    return {case: (case, row) for case, row in rows.items()}
 
 
 def normalized_log_regret(row, key):
@@ -137,7 +138,7 @@ def normalized_log_regret(row, key):
     return math.log10(max(regret, REGRET_FLOOR))
 
 
-def noninferiority_gate(julia, python):
+def quality_threshold_gate(julia, python):
     julia_terminal = _terminal_rows(julia)
     python_terminal = _terminal_rows(python)
     rotations = {}
@@ -178,13 +179,13 @@ def noninferiority_gate(julia, python):
         count = len(values["julia"])
         if count < MINIMUM_TRIALS:
             failures.append(
-                f"noninferiority {rotation}: requires at least "
+                f"quality threshold {rotation}: requires at least "
                 f"{MINIMUM_TRIALS} trials, found {count}"
             )
             continue
         margin = _finite_float(
             values["row"],
-            "noninferiority_margin",
+            "quality_threshold",
             rotation,
         )
         observed = statistics.median(values["julia"]) - statistics.median(
@@ -199,7 +200,7 @@ def noninferiority_gate(julia, python):
         }
         if not passed:
             failures.append(
-                f"noninferiority {rotation}: median log-regret difference "
+                f"quality threshold {rotation}: median log-regret difference "
                 f"{observed:.6g} exceeds margin {margin}"
             )
 
@@ -208,7 +209,7 @@ def noninferiority_gate(julia, python):
         found = len(values["rotations"])
         if found != REQUIRED_ROTATIONS:
             failures.append(
-                f"noninferiority {row}: requires {REQUIRED_ROTATIONS} "
+                f"quality threshold {row}: requires {REQUIRED_ROTATIONS} "
                 f"rotations, found {found}"
             )
         passed = sum(
@@ -243,22 +244,11 @@ def validate_matrices(julia, python):
         return failures
 
     for runtime, rows in (("Julia", julia), ("Python", python)):
-        grouped = {}
         for key, row in rows.items():
             if row.get("runtime") != runtime:
                 failures.append(
                     f"{runtime} input {key}: runtime={row.get('runtime')!r}"
                 )
-            grouped.setdefault(key[:4], []).append((key, row))
-        for case, checkpoints in sorted(grouped.items()):
-            _, baseline = checkpoints[0]
-            for key, row in checkpoints[1:]:
-                for field in MATCHED_METADATA:
-                    if row.get(field) != baseline.get(field):
-                        failures.append(
-                            f"{runtime} {case}: {field} changes at checkpoint "
-                            f"{key[4]}"
-                        )
 
     julia_terminal = _terminal_rows(julia)
     python_terminal = _terminal_rows(python)
@@ -273,7 +263,7 @@ def validate_matrices(julia, python):
                     f"Python={python_row.get(field)!r}"
                 )
         if julia_key[:4] != python_key[:4]:
-            failures.append(f"terminal comparison keys differ for {case}")
+            failures.append(f"comparison keys differ for {case}")
     return failures
 
 
@@ -283,11 +273,11 @@ def main(julia_path, python_path):
     failures = validate_matrices(julia, python)
     summaries = {}
     if not failures:
-        noninferiority_failures, summaries = noninferiority_gate(julia, python)
-        failures.extend(noninferiority_failures)
+        threshold_failures, summaries = quality_threshold_gate(julia, python)
+        failures.extend(threshold_failures)
     if failures:
         raise SystemExit(
-            "native cross-runtime non-inferiority failed:\n"
+            "matched cross-runtime quality threshold failed:\n"
             + "\n".join(failures)
         )
     worst_group, worst = max(

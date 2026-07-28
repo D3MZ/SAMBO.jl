@@ -52,7 +52,7 @@ end
 
     continuous = init(
         Problem(SearchSpace(x=Continuous(0.0, 1.0))),
-        SMBO(initial_points=1, repeat_policy=AllowRepeatedEvaluations());
+        SMBO(initial_points=1, repeat_policy=SAMBO.AllowRepeatedEvaluations());
         initial_points=[(x=0.2,)],
         initial_values=[0.04],
         maximum_evaluations=5,
@@ -73,7 +73,7 @@ end
 
     partial_design = init(
         Problem(SearchSpace(x=Continuous(0.0, 1.0))),
-        SMBO(initial_points=1, repeat_policy=AllowRepeatedEvaluations());
+        SMBO(initial_points=1, repeat_policy=SAMBO.AllowRepeatedEvaluations());
         maximum_evaluations=3,
         rng=MersenneTwister(4),
     )

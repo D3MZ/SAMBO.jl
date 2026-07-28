@@ -6,7 +6,7 @@ The equivalent lifecycle is
 advances one solver iteration.
 
 Algorithms are immutable values: `SMBO()`, `SCEUA()`, `SHGO()`, and
-`TopologicalMultistart()`. Solver and workspace state is mutable. Common options
+`SAMBO.TopologicalMultistart()`. Solver and workspace state is mutable. Common options
 include `maximum_evaluations`, `maximum_iterations`, tolerances, `time_limit`,
 initial observations, `rng`, `executor`, and `callback`.
 
@@ -15,7 +15,7 @@ Results are read through `bestpoint`, `bestvalue`, `optimizationsense`, `trace`,
 `observations`. `minimizer` and `minimum` remain compatibility aliases.
 
 SMBO supports `ask!`, `tell!`, `cancel!`, `fail!`, `checkpoint`, `restore`, and
-`result`. Outstanding `CandidateBatch` values may be partially completed and
+`result`. Outstanding `SAMBO.CandidateBatch` values may be partially completed and
 resolved in any order. Callbacks observe committed batches atomically.
 
 Configuration-dependent behavior is represented by policy values. Candidate
@@ -23,9 +23,9 @@ generators report the number of points generated and are never silently replaced
 Topology, uncertainty, refitting, equality, and SHGO minimization schedules are
 likewise explicit.
 
-SHGO uses `RandomShiftedSampling(SobolDesign())` by default so each seeded run
+SHGO uses `SAMBO.RandomShiftedSampling(SAMBO.SobolDesign())` by default so each seeded run
 has one reproducible continuing QMC stream. Local searches use
-`GlobalBoxLocalBounds()` by default; `TopographicalLocalBounds()` explicitly
+`SAMBO.GlobalBoxLocalBounds()` by default; `SAMBO.TopographicalLocalBounds()` explicitly
 restricts them to neighboring sample vertices.
 
 ## Surrogate extension protocol

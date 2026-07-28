@@ -23,12 +23,14 @@ FIELDS = (
     "configuration_hash",
     "initial_design_hash",
     "initial_design_capability",
+    "sampling_stream_hash",
+    "sampling_stream_capability",
     "budget",
     "evaluation",
     "evaluations",
     "minimum",
     "optimum",
-    "noninferiority_margin",
+    "quality_threshold",
 )
 
 
@@ -43,16 +45,18 @@ def result_row(runtime, rotation_id=1, trial_id=1, **overrides):
         "trial_id": trial_id,
         "rotation_id": rotation_id,
         "configuration_hash": (
-            "python-sambo-1.25.2-matched-v5:SMBO:100:6-rotations"
+            "python-sambo-1.25.2-matched-v6:SMBO:100:6-rotations"
         ),
         "initial_design_hash": f"design-{rotation_id}-{trial_id}",
         "initial_design_capability": "injected-counted-lhs",
+        "sampling_stream_hash": "none",
+        "sampling_stream_capability": "not-applicable",
         "budget": 100,
         "evaluation": 100,
         "evaluations": 100,
         "minimum": 0.1,
         "optimum": 0.0,
-        "noninferiority_margin": 0.25,
+        "quality_threshold": 0.25,
     }
     row.update(overrides)
     return row
@@ -97,19 +101,19 @@ class ComparatorTests(unittest.TestCase):
             self.write("python.csv", python_rows),
         )
 
-    def test_unclipped_noninferiority_passes_when_julia_is_better(self):
+    def test_quality_threshold_passes_when_julia_is_better(self):
         paths = self.paired_paths(
             trial_rows("Julia", [0.01] * 10),
             trial_rows("Python", [0.1] * 10),
         )
         compare.main(*paths)
 
-    def test_noninferiority_fails_when_julia_is_materially_worse(self):
+    def test_quality_threshold_fails_when_julia_is_materially_worse(self):
         paths = self.paired_paths(
             trial_rows("Julia", [1.0] * 10),
             trial_rows("Python", [0.1] * 10),
         )
-        with self.assertRaisesRegex(SystemExit, "noninferiority"):
+        with self.assertRaisesRegex(SystemExit, "quality threshold"):
             compare.main(*paths)
 
     def test_row_pass_count_is_rotation_level(self):
@@ -121,7 +125,7 @@ class ComparatorTests(unittest.TestCase):
             julia_rows,
             trial_rows("Python", [0.1] * 10),
         )
-        failures, summaries = compare.noninferiority_gate(
+        failures, summaries = compare.quality_threshold_gate(
             compare.read_results(paths[0]),
             compare.read_results(paths[1]),
         )
@@ -184,13 +188,20 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "matrices differ"):
             compare.main(*paths)
 
-    def test_checkpoint_must_match_evaluations(self):
+    def test_evaluation_must_match_evaluations(self):
         paths = self.paired_paths(
             trial_rows("Julia", [0.1] * 10, evaluation=99),
             trial_rows("Python", [0.1] * 10),
         )
-        with self.assertRaisesRegex(SystemExit, "checkpoint/evaluations"):
+        with self.assertRaisesRegex(SystemExit, "evaluation/evaluations"):
             compare.main(*paths)
+
+    def test_only_one_terminal_row_per_trial_is_accepted(self):
+        rows = trial_rows("Julia", [0.1] * 10)
+        rows.append(dict(rows[0], evaluation=99, evaluations=99))
+        path = self.write("duplicate.csv", rows)
+        with self.assertRaisesRegex(SystemExit, "duplicate comparison key"):
+            compare.read_results(path)
 
     def test_empty_and_malformed_files_are_rejected(self):
         empty = self.root / "empty.csv"

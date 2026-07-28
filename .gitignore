@@ -6,3 +6,5 @@
 /docs/Manifest*.toml
 /docs/build/
 /benchmark/Manifest.toml
+__pycache__/
+*.py[cod]

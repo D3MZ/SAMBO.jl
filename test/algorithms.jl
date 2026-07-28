@@ -20,7 +20,7 @@ end
     for algorithm in (
         SCEUA(),
         SMBO(candidate_pool=256, no_change_iterations=typemax(Int)),
-        TopologicalMultistart(samples=20),
+        SAMBO.TopologicalMultistart(samples=20),
     )
         result = solve(
             Problem(rosenbrock, Box([-2.0, -1.0], [2.0, 3.0])),
@@ -37,9 +37,9 @@ end
     for algorithm in (
         SCEUA(),
         SMBO(candidate_pool=32),
-        TopologicalMultistart(
+        SAMBO.TopologicalMultistart(
             samples=6,
-            topology=KNearestTopology(neighbors=2),
+            topology=SAMBO.KNearestTopology(neighbors=2),
         ),
     )
         typed = solve(
@@ -94,10 +94,10 @@ end
     @test_throws MethodError init(problem, SMBO(); misspelled_option=true)
     @test SCEUA(reflection=big"1.0").reflection isa BigFloat
     @test_throws ArgumentError init(problem, SMBO(candidate_pool=0))
-    @test_throws ArgumentError init(problem, TopologicalMultistart(local_starts=0))
+    @test_throws ArgumentError init(problem, SAMBO.TopologicalMultistart(local_starts=0))
     @test_throws ArgumentError SCEUA(complex_size=1)
 
-    @testset "SCE-UA kernels and repair" begin
+    @testset "SCE-UA behavior and repair" begin
         @test SCEUA().complex_size == 0
         @test SCEUA().population_tolerance == 1e-7
         @test SCEUA().objective_tolerance == 1e-7
@@ -129,28 +129,26 @@ end
         @test iteration_count(stalled) == 31
         @test evaluation_count(stalled) == 552
 
-        @test SAMBO._complex_members(12, 3, 2) == [2, 5, 8, 11]
-        members_buffer = zeros(Int, 4)
-        @test SAMBO._python_complex_members!(
-            members_buffer,
-            6,
-            3,
-            1,
-        ) == 3
-        @test members_buffer[1:3] == [1, 1, 4]
-        population = reshape(collect(1.0:12.0), 2, 6)
-        centroid = zeros(2)
-        members = [2, 4, 6]
-        SAMBO._complex_centroid!(centroid, population, members, 1)
-        @test centroid == (
-            population[:, 1] + population[:, 2] + population[:, 4]
-        ) / 3
-        reflected = zeros(2)
-        contracted = zeros(2)
-        SAMBO._reflection!(reflected, centroid, population[:, 6], 1.0)
-        SAMBO._contraction!(contracted, centroid, population[:, 6], 0.5)
-        @test reflected ≈ 2centroid - population[:, 6]
-        @test contracted ≈ 0.5 .* (centroid + population[:, 6])
+        contraction_state = init(
+            Problem(x -> x[1] < 0.1 ? 10.0 : -1.0, Box([0.0], [1.0])),
+            SCEUA(
+                complexes=1,
+                complex_size=3,
+                population_tolerance=0.0,
+                objective_tolerance=0.0,
+            );
+            initial_points=[[0.0], [0.5], [1.0]],
+            initial_values=[0.0, 1.0, 2.0],
+            maximum_evaluations=6,
+            rng=MersenneTwister(94),
+        )
+        step!(contraction_state)
+        step!(contraction_state)
+        trajectory = latentpoints(trace(contraction_state))
+        @test trajectory[:, end-1] == [0.0]
+        @test trajectory[:, end] ≈ [7 / 15]
+        @test objectivevalues(trace(contraction_state))[end-1:end] == [10.0, -1.0]
+        @test evaluation_count(result(contraction_state)) == 2
 
         constrained_problem = Problem(
             x -> (x[1] - 0.9)^2,
@@ -283,14 +281,14 @@ end
             SCEUA();
             maximum_evaluations=24,
             rng=MersenneTwister(22),
-            executor=Serial(),
+            executor=SAMBO.Serial(),
         )
         threaded = solve(
             Problem(x -> sum(abs2, x), Box(fill(-1.0, 3), fill(1.0, 3))),
             SCEUA();
             maximum_evaluations=24,
             rng=MersenneTwister(22),
-            executor=Threaded(),
+            executor=SAMBO.Threaded(),
         )
         @test latentpoints(trace(serial)) == latentpoints(trace(threaded))
         @test objectivevalues(trace(serial)) == objectivevalues(trace(threaded))
@@ -317,6 +315,6 @@ end
 
     @test_throws ArgumentError init(
         Problem(_ -> 0.0, SearchSpace(x=Choices(:a, :b))),
-        TopologicalMultistart(),
+        SAMBO.TopologicalMultistart(),
     )
 end

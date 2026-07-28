@@ -13,13 +13,13 @@ end
 
 @testset "advanced solver contracts" begin
     @testset "iterative SHGO" begin
-        @test_throws ComplexConstructionError SAMBO.buildcomplex(
+        @test_throws SAMBO.ComplexConstructionError SAMBO.buildcomplex(
             [0.0 0.3 0.6 1.0; 0.0 0.3 0.6 1.0],
-            DelaunayTopology(),
+            SAMBO.DelaunayTopology(),
         )
         knn = SAMBO.buildcomplex(
             [0.0 1.0; 0.0 1.0],
-            KNearestTopology(neighbors=1),
+            SAMBO.KNearestTopology(neighbors=1),
         )
         @test knn.adjacency == [[2], [1]]
 
@@ -43,17 +43,17 @@ end
         @test state.workspace.sample_points === storage
         @test state.workspace.refinements == 2
         @test state.workspace.sample_count > first_samples
-        @test homology_rank(state) >= 1
-        @test homology_rank(state) == minimizer_count(state)
-        @test topographical_candidate_count(state) ==
+        @test SAMBO.homology_rank(state) >= 1
+        @test SAMBO.homology_rank(state) == SAMBO.minimizer_count(state)
+        @test SAMBO.topographical_candidate_count(state) ==
             length(state.workspace.candidate_indices)
-        @test homology_rank_differential(state) >= 0
+        @test SAMBO.homology_rank_differential(state) >= 0
 
         result = solve!(state)
         @test minimum(result) < 0.05
         @test result.statistics.refinements >= 2
         @test result.statistics.local_minima >= 1
-        @test result.statistics.homology_rank == homology_rank(state)
+        @test result.statistics.homology_rank == SAMBO.homology_rank(state)
 
         too_small = solve(
             problem,
@@ -122,7 +122,7 @@ end
         global_calls = Ref(0)
         local_calls = Ref(0)
         destination = zeros(1, 7)
-        all_local = MixtureCandidates(
+        all_local = SAMBO.MixtureCandidates(
             FillCandidates(0.1, global_calls),
             FillCandidates(0.9, local_calls);
             global_fraction=0,
@@ -134,7 +134,7 @@ end
 
         global_calls[] = 0
         local_calls[] = 0
-        all_global = MixtureCandidates(
+        all_global = SAMBO.MixtureCandidates(
             FillCandidates(0.1, global_calls),
             FillCandidates(0.9, local_calls);
             global_fraction=1,
@@ -144,9 +144,9 @@ end
         @test local_calls[] == 0
         @test all(==(0.1), destination)
 
-        @test SAMBO.refit_interval(FixedRefit(3), 100) == 3
-        @test SAMBO.refit_interval(SquareRootRefit(2), 3) == 2
-        @test SAMBO.refit_interval(SquareRootRefit(2), 100) == 10
+        @test SAMBO.refit_interval(SAMBO.FixedRefit(3), 100) == 3
+        @test SAMBO.refit_interval(SAMBO.SquareRootRefit(2), 3) == 2
+        @test SAMBO.refit_interval(SAMBO.SquareRootRefit(2), 100) == 10
     end
 
     @testset "sense, failures, constraints, and return codes" begin

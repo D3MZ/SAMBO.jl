@@ -10,7 +10,7 @@ using Test
     algorithm = SMBO()
     @test algorithm.candidate_pool == 80_000
     @test algorithm.batch_size == 1
-    @test algorithm.refit_schedule == FixedRefit(1)
+    @test algorithm.refit_schedule == SAMBO.FixedRefit(1)
     @test algorithm.acquisition isa SAMBO.RandomizedLowerConfidenceBound
     @test algorithm.candidate_sampler isa SAMBO.AdaptiveDensityCandidates
     @test algorithm.improvement_tolerance == 1e-6

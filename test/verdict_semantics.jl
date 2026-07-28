@@ -56,11 +56,11 @@ end
 @testset "verdict semantic audit" begin
     @testset "topology is explicit" begin
         degenerate = [0.0 0.3 0.6 1.0; 0.0 0.3 0.6 1.0]
-        @test_throws ComplexConstructionError SAMBO.buildcomplex(
+        @test_throws SAMBO.ComplexConstructionError SAMBO.buildcomplex(
             degenerate,
-            DelaunayTopology(),
+            SAMBO.DelaunayTopology(),
         )
-        knn = SAMBO.buildcomplex(degenerate, KNearestTopology(neighbors=1))
+        knn = SAMBO.buildcomplex(degenerate, SAMBO.KNearestTopology(neighbors=1))
         @test all(!isempty, knn.adjacency)
     end
 
@@ -73,7 +73,7 @@ end
                 initial_points=1,
                 candidate_pool=8,
                 candidate_sampler=sampler,
-                repeat_policy=AllowRepeatedEvaluations(),
+                repeat_policy=SAMBO.AllowRepeatedEvaluations(),
             );
             maximum_evaluations=4,
             rng=MersenneTwister(901),
@@ -107,11 +107,11 @@ end
             rng=MersenneTwister(903),
         )
         step!(state)
-        @test homology_rank(state) == minimizer_count(state)
-        @test state.workspace.homology_rank == homology_rank(state)
-        @test result(state).statistics.homology_rank == homology_rank(state)
+        @test SAMBO.homology_rank(state) == SAMBO.minimizer_count(state)
+        @test state.workspace.homology_rank == SAMBO.homology_rank(state)
+        @test result(state).statistics.homology_rank == SAMBO.homology_rank(state)
         @test state.workspace.homology_rank_differential ==
-            homology_rank_differential(state)
+            SAMBO.homology_rank_differential(state)
 
         budget_limited = solve(
             Problem(x -> sum(abs2, x), SAMBO.Box(fill(-1.0, 2), fill(1.0, 2))),
@@ -130,7 +130,7 @@ end
                 SAMBO.Box([0.0], [1.0]);
                 constraint=x -> abs(x[1] - 0.5) <= eps(),
             ),
-            TopologicalMultistart(samples=4, local_starts=1);
+            SAMBO.TopologicalMultistart(samples=4, local_starts=1);
             initial_points=[[0.5]],
             initial_values=[0.25],
             maximum_evaluations=4,
@@ -191,7 +191,7 @@ end
         local_sampler = AuditFillCandidates(0.9, typemax(Int), local_calls)
         destination = zeros(1, 7)
 
-        all_local = MixtureCandidates(
+        all_local = SAMBO.MixtureCandidates(
             global_sampler,
             local_sampler;
             global_fraction=0,
@@ -202,7 +202,7 @@ end
 
         global_calls[] = 0
         local_calls[] = 0
-        all_global = MixtureCandidates(
+        all_global = SAMBO.MixtureCandidates(
             global_sampler,
             local_sampler;
             global_fraction=1,
@@ -224,7 +224,7 @@ end
                     initial_points=1,
                     candidate_pool=8,
                     candidate_sampler=sampler,
-                    repeat_policy=AllowRepeatedEvaluations(),
+                    repeat_policy=SAMBO.AllowRepeatedEvaluations(),
                     refit_schedule=schedule,
                 );
                 maximum_evaluations=evaluations,
@@ -236,12 +236,12 @@ end
             end
             return fits[]
         end
-        @test fit_count(FixedRefit(3), 5) == 2
-        @test fit_count(SquareRootRefit(2), 5) == 2
+        @test fit_count(SAMBO.FixedRefit(3), 5) == 2
+        @test fit_count(SAMBO.SquareRootRefit(2), 5) == 2
     end
 
     @testset "repeat policies and equality" begin
-        function repeated_state(policy, equality=ExactCandidateEquality())
+        function repeated_state(policy, equality=SAMBO.ExactCandidateEquality())
             sampler = AuditFillCandidates(0.5, typemax(Int), Ref(0))
             state = init(
                 Problem(SearchSpace(x=Continuous(0.0, 1.0))),
@@ -260,10 +260,10 @@ end
             return state
         end
         @test_throws CandidateGenerationError ask!(
-            repeated_state(AvoidRepeatedEvaluations()),
+            repeated_state(SAMBO.AvoidRepeatedEvaluations()),
             1,
         )
-        @test length(ask!(repeated_state(AllowRepeatedEvaluations()), 1)) == 1
+        @test length(ask!(repeated_state(SAMBO.AllowRepeatedEvaluations()), 1)) == 1
 
         approximate_sampler = AuditFillCandidates(0.5001, typemax(Int), Ref(0))
         approximate = init(
@@ -272,8 +272,8 @@ end
                 initial_points=1,
                 candidate_pool=8,
                 candidate_sampler=approximate_sampler,
-                repeat_policy=AvoidRepeatedEvaluations(),
-                candidate_equality=ApproximateCandidateEquality(0.001),
+                repeat_policy=SAMBO.AvoidRepeatedEvaluations(),
+                candidate_equality=SAMBO.ApproximateCandidateEquality(0.001),
             );
             initial_points=[(x=0.5,)],
             initial_values=[0.0],
@@ -292,7 +292,7 @@ end
                     surrogate=AuditCountingSurrogate(Ref(0)),
                     acquisition=GreedyMean(),
                     batch_strategy=strategy,
-                    repeat_policy=AllowRepeatedEvaluations(),
+                    repeat_policy=SAMBO.AllowRepeatedEvaluations(),
                 );
                 initial_points=[(x=0.5,)],
                 initial_values=[0.5],
@@ -301,8 +301,8 @@ end
             )
             return SAMBO._select_candidates(state, candidates, 2)
         end
-        @test selected(GreedyBatch()) == reshape([0.0, 0.01], 1, :)
-        @test selected(LocalPenalization(strength=10.0, radius=0.1)) ==
+        @test selected(SAMBO.GreedyBatch()) == reshape([0.0, 0.01], 1, :)
+        @test selected(SAMBO.LocalPenalization(strength=10.0, radius=0.1)) ==
             reshape([0.0, 1.0], 1, :)
     end
 

@@ -14,10 +14,17 @@ include("spaces.jl")
 include("core.jl")
 include("sampling.jl")
 include("evaluation.jl")
+include("bounded_optimization.jl")
 include("surrogates.jl")
 include("smbo.jl")
+include("candidate_strategies.jl")
+include("smbo_finite_spaces.jl")
+include("smbo_batches.jl")
+include("checkpoint.jl")
 include("sceua.jl")
 include("shgo.jl")
+include("compat/python_sambo.jl")
+include("extras/topological_multistart.jl")
 include("diagnostics.jl")
 
 const PublicSolverState = Union{SMBOState,SCEUAState,SHGOState}
@@ -75,33 +82,17 @@ export OptimizationSense, Minimize, Maximize
 export NonfinitePolicy, ErrorOnNonfinite, PenalizeNonfinite, AllowInfinite
 export NumericalFailureError
 export Box, SearchSpace, Continuous, Choices
-export SMBO, SCEUA, SHGO, TopologicalMultistart, Serial, Threaded, CandidateBatch
-export DelaunayTopology, KNearestTopology, ComplexConstructionError
-export PatternSearch, QuasiNewtonSearch
-export MinimizeEveryRefinement, MinimizeAtTermination
-export RandomShiftedSampling, GlobalBoxLocalBounds, TopographicalLocalBounds
-export BestLocalStarts, FarthestFromLatestMinimum
-export PythonSAMBOProfile
-export UniformDesign, LatinHypercubeDesign, HaltonDesign, ScrambledHaltonDesign, SobolDesign
+export SMBO, SCEUA, SHGO
 export GaussianProcessSurrogate, LowerConfidenceBound, RandomizedLowerConfidenceBound
 export GreedyMean, DistanceUncertainty, clone_surrogate
 export fitmodel, predictmean!, predictmeanvariance!, predictionworkspace
 export AutomaticLengthScale, IsotropicLengthScale, ARDLengthScale, GeometricJitter
 export GPPredictionWorkspace
 export EnsembleSurrogate
-export UniformCandidates, GlobalLocalCandidates
-export EliteGaussianCandidates, MixtureCandidates
 export generate_candidates!
-export AvoidRepeatedEvaluations, AllowRepeatedEvaluations
 export CandidateGenerationError
-export ExactCandidateEquality, ApproximateCandidateEquality
-export FixedRefit, SquareRootRefit
-export GreedyBatch, LocalPenalization, space_cardinality
 export minimize, init, solve, solve!, step!, ask!, tell!, cancel!, fail!, result
-export checkpoint, restore, SMBOCheckpoint
-export refine_sampling!, update_complex!, local_minimum_candidates
-export homology_rank, homology_rank_differential, update_minimizer_pool!
-export topographical_candidate_count, minimizer_count
+export checkpoint, restore
 export local_minimize!
 export problem, space, rng, remaining_evaluations, iteration, evaluate!
 export minimizer, minimum, bestpoint, bestvalue, optimizationsense

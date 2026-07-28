@@ -103,13 +103,17 @@ jobs:
       - name: Install locked Python environment
         run: python -m pip install --requirement benchmark/requirements-correctness.txt
       - run: python -m unittest -v benchmark/test_python_capabilities.py
-      - name: Native solver non-inferiority
+      - name: Matched cross-runtime quality threshold
         run: |
           julia --project=. benchmark/correctness_julia.jl \
             > "$RUNNER_TEMP/native-julia.csv"
           python benchmark/correctness_python.py \
             > "$RUNNER_TEMP/native-python.csv"
           python benchmark/compare_correctness.py \
+            "$RUNNER_TEMP/native-julia.csv" \
+            "$RUNNER_TEMP/native-python.csv"
+          python benchmark/update_readme.py --check-quality \
+            README.md \
             "$RUNNER_TEMP/native-julia.csv" \
             "$RUNNER_TEMP/native-python.csv"
   extensions:

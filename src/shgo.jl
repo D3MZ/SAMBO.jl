@@ -1,6 +1,4 @@
 struct DelaunayTopology end
-"""Qhull policy used by SciPy's incremental Delaunay construction in SHGO."""
-struct PythonIncrementalDelaunayTopology end
 struct KNearestTopology
     neighbors::Int
 end
@@ -61,30 +59,6 @@ function QuasiNewtonSearch(;
         gradient_tolerance,
         minimum_step,
     )...)
-end
-
-"""
-Experimental Delaunay/neighbor-graph multistart search.
-
-This is not an implementation of simplicial homology global optimization.
-"""
-struct TopologicalMultistart{S,T,L}
-    sampling::S
-    topology::T
-    local_solver::L
-    samples::Int
-    local_starts::Int
-end
-function TopologicalMultistart(;
-    sampling=SobolDesign(),
-    topology=DelaunayTopology(),
-    local_solver=PatternSearch(),
-    samples=256,
-    local_starts=8,
-)
-    samples > 0 || throw(ArgumentError("samples must be positive"))
-    local_starts > 0 || throw(ArgumentError("local_starts must be positive"))
-    return TopologicalMultistart(sampling, topology, local_solver, samples, local_starts)
 end
 
 struct NeighborComplex
@@ -190,13 +164,6 @@ function _delaunay_complex(points, options; scipy_shgo_adjacency=false)
 end
 buildcomplex(points, ::DelaunayTopology) =
     _delaunay_complex(points, "qhull d Qt Qbb Qc Qz QJ Pp")
-buildcomplex(points, ::PythonIncrementalDelaunayTopology) =
-    _delaunay_complex(
-        points,
-        "qhull d Qt Qc Qx Q11";
-        scipy_shgo_adjacency=true,
-    )
-
 function buildcomplex(points, topology::KNearestTopology)
     _, count = size(points)
     count > 0 || return NeighborComplex(Vector{Vector{Int}}())
@@ -231,231 +198,6 @@ function localcandidates(complex::NeighborComplex, values)
     return candidates
 end
 
-mutable struct TopologicalMultistartWorkspace{TX,TY}
-    sample_points::Matrix{TX}
-    sample_values::Vector{TY}
-    local_indices::Vector{Int}
-    current_start::Int
-    center::Vector{TX}
-    center_value::TY
-    step_size::TX
-    initialized::Bool
-    local_minima_count::Int
-    completed_starts::Int
-    proposals::Matrix{TX}
-    proposal_values::Vector{TY}
-end
-
-mutable struct TopologicalMultistartState{C,A,W}
-    core::C
-    algorithm::A
-    workspace::W
-end
-
-function _continuous_space(space::Box)
-    return true
-end
-_iscontinuous(::Continuous) = true
-_iscontinuous(::Union{AbstractRange,Choices}) = false
-function _continuous_space(space::SearchSpace)
-    return all(_iscontinuous, space.dimensions)
-end
-
-function init(
-    problem::Problem,
-    algorithm::TopologicalMultistart;
-    initial_points=nothing,
-    initial_values=nothing,
-    kwargs...,
-)
-    _continuous_space(problem.space) ||
-        throw(ArgumentError("TopologicalMultistart supports continuous dimensions only"))
-    core = _makecore(problem; kwargs...)
-    _seed_initial!(core, initial_points, initial_values)
-    TX = eltype(core.trace.latent_points)
-    TY = eltype(core.trace.objective_values)
-    remaining = _remaining(core)
-    reserve = min(max(0, remaining - 1), max(2dimension(problem.space), 2algorithm.local_starts))
-    minimum_complex = min(
-        remaining,
-        max(dimension(problem.space) + 2, 2dimension(problem.space) + 1),
-    )
-    new_target = iszero(remaining) ? 0 :
-        max(minimum_complex, remaining - reserve)
-    sample_count = min(
-        algorithm.samples,
-        core.trace.count + new_target,
-    )
-    required_vertices = dimension(problem.space) == 1 ?
-        2 : dimension(problem.space) + 2
-    sample_count < required_vertices &&
-        (core.retcode = :evaluation_limit)
-    workspace = TopologicalMultistartWorkspace(
-        Matrix{TX}(undef, dimension(problem.space), sample_count),
-        Vector{TY}(undef, sample_count),
-        Int[],
-        0,
-        zeros(TX, dimension(problem.space)),
-        _worst(TY, problem.sense),
-        TX(initialstep(algorithm.local_solver)),
-        false,
-        0,
-        0,
-        Matrix{TX}(undef, dimension(problem.space), 2dimension(problem.space)),
-        Vector{TY}(undef, 2dimension(problem.space)),
-    )
-    return TopologicalMultistartState(core, algorithm, workspace)
-end
-
-function _initialize_topological_multistart!(state::TopologicalMultistartState)
-    workspace = state.workspace
-    trace = state.core.trace
-    sample_count = size(workspace.sample_points, 2)
-    initial_count = min(trace.count, sample_count)
-    if initial_count > 0
-        initial_indices = partialsortperm(
-            _loss.(Ref(state.core.problem.sense), objectivevalues(trace)),
-            1:initial_count,
-        )
-        workspace.sample_points[:, 1:initial_count] .=
-            @view trace.latent_points[:, initial_indices]
-        workspace.sample_values[1:initial_count] .=
-            trace.objective_values[initial_indices]
-    end
-    new_count = sample_count - initial_count
-    if new_count > 0
-        new_points = @view workspace.sample_points[:, initial_count+1:sample_count]
-        _sample_feasible!(
-            state.core.rng,
-            new_points,
-            state.algorithm.sampling,
-            state.core.problem,
-        )
-        new_values = _evaluate_batch(state.core, new_points)
-        workspace.sample_values[initial_count+1:sample_count] .= new_values
-        state.core.iteration += 1
-        _commit_batch!(state.core, new_points, new_values)
-    end
-    complex = buildcomplex(workspace.sample_points, state.algorithm.topology)
-    workspace.local_indices = localcandidates(
-        complex,
-        _loss.(Ref(state.core.problem.sense), workspace.sample_values),
-    )
-    isempty(workspace.local_indices) &&
-        push!(
-            workspace.local_indices,
-            argmin(_loss.(Ref(state.core.problem.sense), workspace.sample_values)),
-        )
-    sort!(
-        workspace.local_indices;
-        by=index -> _loss(state.core.problem, workspace.sample_values[index]),
-    )
-    resize!(workspace.local_indices, min(length(workspace.local_indices), state.algorithm.local_starts))
-    workspace.local_minima_count = length(workspace.local_indices)
-    workspace.initialized = true
-    _begin_local_start!(state, 1)
-    return state
-end
-
-function _begin_local_start!(state::TopologicalMultistartState, start)
-    workspace = state.workspace
-    1 <= start <= length(workspace.local_indices) ||
-        throw(BoundsError(workspace.local_indices, start))
-    workspace.current_start = start
-    index = workspace.local_indices[start]
-    workspace.center .= @view workspace.sample_points[:, index]
-    workspace.center_value = workspace.sample_values[index]
-    workspace.step_size = eltype(workspace.center)(initialstep(state.algorithm.local_solver))
-    return state
-end
-
-struct LocalStartExhausted end
-
-function _finish_local_start!(state::TopologicalMultistartState)
-    workspace = state.workspace
-    workspace.completed_starts += 1
-    if workspace.completed_starts >= length(workspace.local_indices)
-        state.core.retcode = :stalled
-    else
-        _begin_local_start!(state, workspace.current_start + 1)
-    end
-    return LocalStartExhausted()
-end
-
-function _local_proposals(state::TopologicalMultistartState, ::PatternSearch)
-    workspace = state.workspace
-    core = state.core
-    d = dimension(core.problem.space)
-    maximum = min(2d, _remaining(core))
-    proposals = @view workspace.proposals[:, 1:maximum]
-    count = 0
-    for axis in 1:d, direction in (-1, 1)
-        count == maximum && break
-        proposal = @view proposals[:, count + 1]
-        proposal .= workspace.center
-        proposal[axis] += direction * workspace.step_size
-        project!(proposal, core.problem.space)
-        _canonicalize!(proposal, core.problem.space)
-        isfeasible(core.problem, decode(core.problem.space, proposal)) || continue
-        count += 1
-    end
-    return @view proposals[:, 1:count]
-end
-
-function step!(state::TopologicalMultistartState)
-    _finished(state.core) && return state
-    !state.workspace.initialized && return _initialize_topological_multistart!(state)
-    proposals = _local_proposals(state, state.algorithm.local_solver)
-    if isempty(proposals)
-        _finish_local_start!(state)
-        return state
-    end
-    values = @view state.workspace.proposal_values[1:size(proposals, 2)]
-    _evaluate_batch!(values, state.core, proposals)
-    state.core.iteration += 1
-    _commit_batch!(state.core, proposals, values)
-    best = argmin(_loss.(Ref(state.core.problem.sense), values))
-    if _isbetter(
-        state.core.problem,
-        values[best],
-        state.workspace.center_value,
-    )
-        state.workspace.center .= @view proposals[:, best]
-        state.workspace.center_value = values[best]
-    else
-        state.workspace.step_size *= eltype(state.workspace.center)(0.5)
-        if state.workspace.step_size < minimumstep(state.algorithm.local_solver)
-            _finish_local_start!(state)
-        end
-    end
-    return state
-end
-
-function solve!(state::TopologicalMultistartState)
-    isnothing(state.core.problem.objective) &&
-        throw(ArgumentError("solve! requires an objective"))
-    try
-        while !_finished(state.core)
-            step!(state)
-        end
-    catch error
-        error isa InfeasibleSpaceError || rethrow()
-        state.core.retcode = :infeasible_space
-    end
-    return result(state)
-end
-solve(problem::Problem, algorithm::TopologicalMultistart; kwargs...) =
-    solve!(init(problem, algorithm; kwargs...))
-trace(state::TopologicalMultistartState) = state.core.trace
-result(state::TopologicalMultistartState) = _result(
-    state.core,
-    state.algorithm;
-    statistics=(
-        iterations=state.core.iteration,
-        local_candidates=length(state.workspace.local_indices),
-    ),
-)
-
 """
 Simplicial homology global optimization using iterative sampling-complex
 refinement and local minimization of topographical minima.
@@ -482,8 +224,6 @@ end
 struct GlobalBoxLocalBounds end
 struct TopographicalLocalBounds end
 struct BestLocalStarts end
-struct FarthestFromLatestMinimum end
-struct PythonSAMBOProfile end
 
 struct SHGO{S,T,L,M,B,P}
     sampling::S
@@ -558,43 +298,6 @@ function SHGO(;
         Float64(convergence_tolerance),
         convergence_window,
     )
-end
-
-"""
-Configuration matching the effective SHGO policy used by Python SAMBO 1.25.2.
-
-It uses a seeded Owen-style digit scramble of a Halton design, 80 samples per refinement,
-four local starts, immediate zero-growth homology stopping, and the Python
-wrapper's 30-value/`1e-6` convergence check. The local solver is the closest
-native bounded quasi-Newton analogue to SciPy's finite-difference SLSQP call.
-
-This profile does not make the implementations identical: Julia's local search
-remains the native BFGS/Armijo quasi-Newton routine, while Python calls SciPy
-SLSQP, whose line search and compound stopping tests are not public extension
-points here. The digit permutations also come from Julia's seeded Xoshiro
-stream rather than NumPy's PCG64 stream, so equal integer seeds do not imply
-identical cross-runtime sample coordinates.
-"""
-function SHGO(::PythonSAMBOProfile; kwargs...)
-    defaults = (
-        sampling=ScrambledHaltonDesign(skip=0),
-        topology=PythonIncrementalDelaunayTopology(),
-        local_solver=QuasiNewtonSearch(
-            finite_difference_step=sqrt(eps(Float64)),
-            gradient_tolerance=1e-6,
-            minimum_step=1e-8,
-        ),
-        sampling_points=80,
-        local_starts=4,
-        local_start_policy=FarthestFromLatestMinimum(),
-        minimum_homology_growth=0,
-        homology_patience=1,
-        minimum_local_reserve=0,
-        divide_automatic_local_budget=false,
-        convergence_tolerance=1e-6,
-        convergence_window=30,
-    )
-    return SHGO(; merge(defaults, (; kwargs...))...)
 end
 
 minimize_candidates!(state, ::MinimizeEveryRefinement) =
@@ -895,16 +598,6 @@ function local_minimum_candidates(state::SHGOState)
 end
 
 _filter_topological_candidates!(candidates, state) = candidates
-function _filter_topological_candidates!(
-    candidates,
-    state::SHGOState{C,<:SHGO{S,<:PythonIncrementalDelaunayTopology}},
-) where {C,S}
-    filter!(
-        index -> !isempty(state.workspace.complex.adjacency[index]),
-        candidates,
-    )
-    return candidates
-end
 
 function _order_local_candidates!(candidates, state)
     sort!(
@@ -916,10 +609,6 @@ function _order_local_candidates!(candidates, state)
     )
     return candidates
 end
-_order_local_candidates!(
-    candidates,
-    state::SHGOState{C,<:SHGO{S,<:PythonIncrementalDelaunayTopology}},
-) where {C,S} = candidates
 
 homology_rank(state::SHGOState) = state.workspace.homology_rank
 homology_rank_differential(state::SHGOState) =
@@ -1133,138 +822,69 @@ function _quasi_newton_minimize!(
     core = state.core
     TX = eltype(core.trace.latent_points)
     d = length(start)
-    center = copy(start)
-    value = start_value
-    gradient = Vector{TX}(undef, d)
-    next_gradient = similar(gradient)
-    direction = similar(gradient)
-    step_vector = similar(gradient)
-    gradient_change = similar(gradient)
-    inverse_hessian = Matrix{TX}(I, d, d)
-    used = 0
-    gradient_cost = d
-    used + gradient_cost <= budget &&
-        gradient_cost <= _remaining(core) || return center, value
-    used += _local_gradient!(
-        gradient,
-        state,
-        solver,
-        center,
-        value,
-        lower,
-        upper,
-    )
-    while used < budget && !_finished(core)
-        all(isfinite, gradient) || break
-        norm(gradient, Inf) <= TX(solver.gradient_tolerance) && break
-        mul!(direction, inverse_hessian, gradient)
-        direction .*= -one(TX)
-        dot(gradient, direction) < zero(TX) || (direction .= -gradient)
-
-        accepted = false
-        trial_value = value
-        step = one(TX)
-        center_loss = _loss(core.problem, value)
-        while step >= TX(solver.minimum_step) &&
-                used < budget && !_finished(core)
-            proposal = @view state.workspace.local_candidates[:, 1]
-            for axis in 1:d
-                proposal[axis] = clamp(
-                    center[axis] + step * direction[axis] /
-                        _local_coordinate_scale(core.problem.space, axis),
-                    lower[axis],
-                    upper[axis],
-                )
-                step_vector[axis] =
-                    (proposal[axis] - center[axis]) *
-                    _local_coordinate_scale(core.problem.space, axis)
-            end
-            norm(step_vector, Inf) > eps(TX) || break
-            _canonicalize!(proposal, core.problem.space)
-            values = @view state.workspace.local_values[1:1]
-            _evaluate_batch!(
-                values,
-                core,
-                @view(state.workspace.local_candidates[:, 1:1]),
-            )
-            core.iteration += 1
-            _commit_batch!(
-                core,
-                @view(state.workspace.local_candidates[:, 1:1]),
-                values,
-            )
-            used += 1
-            trial_value = values[1]
-            if _shgo_mark_value_spread_converged!(state)
-                break
-            end
-            trial_loss = _loss(core.problem, trial_value)
-            if isfinite(trial_loss) &&
-                    trial_loss <= center_loss +
-                        TX(1e-4) * dot(gradient, step_vector)
-                accepted = true
-                break
-            end
-            step /= TX(2)
-        end
-        if !accepted && !(inverse_hessian ≈ Matrix{TX}(I, d, d))
-            fill!(inverse_hessian, zero(TX))
-            for axis in 1:d
-                inverse_hessian[axis, axis] = one(TX)
-            end
-            continue
-        end
-        accepted || break
-
+    scales = TX[
+        _local_coordinate_scale(core.problem.space, axis)
         for axis in 1:d
-            center[axis] = clamp(
-                center[axis] + step_vector[axis] /
-                    _local_coordinate_scale(core.problem.space, axis),
-                lower[axis],
-                upper[axis],
+    ]
+    physical_start = start .* scales
+    physical_lower = lower .* scales
+    physical_upper = upper .* scales
+    last_value = Ref(start_value)
+    gradient = Vector{TX}(undef, d)
+
+    evaluate = function(point, gradient_required)
+        latent = point ./ scales
+        _canonicalize!(latent, core.problem.space)
+        if gradient_required
+            count = _local_gradient!(
+                gradient,
+                state,
+                solver,
+                latent,
+                last_value[],
+                lower,
+                upper,
             )
+            return _loss(core.problem, last_value[]),
+                count == d ? copy(gradient) : nothing,
+                count
         end
-        improvement = center_loss - _loss(core.problem, trial_value)
-        value = trial_value
-        improvement >= 0 &&
-            improvement < TX(solver.gradient_tolerance) && break
-        used + gradient_cost <= budget &&
-            gradient_cost <= _remaining(core) || break
-        used += _local_gradient!(
-            next_gradient,
-            state,
-            solver,
-            center,
-            value,
-            lower,
-            upper,
+        proposal = @view state.workspace.local_candidates[:, 1]
+        copyto!(proposal, latent)
+        values = @view state.workspace.local_values[1:1]
+        _evaluate_batch!(
+            values,
+            core,
+            @view(state.workspace.local_candidates[:, 1:1]),
         )
-        gradient_change .= next_gradient .- gradient
-        curvature = dot(step_vector, gradient_change)
-        if isfinite(curvature) &&
-                curvature >
-                    sqrt(eps(TX)) * norm(step_vector) * norm(gradient_change)
-            hessian_gradient = inverse_hessian * gradient_change
-            correction =
-                (curvature + dot(gradient_change, hessian_gradient)) /
-                (curvature * curvature)
-            for column in 1:d, row in 1:d
-                inverse_hessian[row, column] +=
-                    correction * step_vector[row] * step_vector[column] -
-                    (
-                        hessian_gradient[row] * step_vector[column] +
-                        step_vector[row] * hessian_gradient[column]
-                    ) / curvature
-            end
-        else
-            fill!(inverse_hessian, zero(TX))
-            for axis in 1:d
-                inverse_hessian[axis, axis] = one(TX)
-            end
-        end
-        gradient .= next_gradient
+        core.iteration += 1
+        _commit_batch!(
+            core,
+            @view(state.workspace.local_candidates[:, 1:1]),
+            values,
+        )
+        last_value[] = values[1]
+        _shgo_mark_value_spread_converged!(state)
+        return _loss(core.problem, values[1]), nothing, 1
     end
-    return center, value
+
+    point, loss, _ = _bounded_bfgs(
+        evaluate,
+        physical_start,
+        physical_lower,
+        physical_upper;
+        initial_value=_loss(core.problem, start_value),
+        max_iterations=typemax(Int),
+        max_cost=min(budget, _remaining(core)),
+        gradient_cost=d,
+        gradient_tolerance=solver.gradient_tolerance,
+        minimum_step=solver.minimum_step,
+        value_tolerance=solver.gradient_tolerance,
+        retry_identity=true,
+        reset_on_bad_curvature=true,
+        stop=() -> _finished(core),
+    )
+    return point ./ scales, _loss(core.problem.sense, loss)
 end
 
 local_minimize!(
@@ -1285,34 +905,6 @@ local_minimize!(
     budget,
 )
 
-function local_minimize!(
-    state::SHGOState{C,<:SHGO{S,<:PythonIncrementalDelaunayTopology}},
-    solver::QuasiNewtonSearch,
-    start,
-    start_value,
-    lower,
-    upper,
-    budget,
-) where {C,S}
-    budget <= 0 && return copy(start), start_value
-    core = state.core
-    candidate = reshape(copy(start), :, 1)
-    values = Vector{eltype(core.trace.objective_values)}(undef, 1)
-    _evaluate_batch!(values, core, candidate)
-    core.iteration += 1
-    _commit_batch!(core, candidate, values)
-    _shgo_mark_value_spread_converged!(state)
-    return _quasi_newton_minimize!(
-        state,
-        solver,
-        start,
-        values[1],
-        lower,
-        upper,
-        budget - 1,
-    )
-end
-
 function _same_minimum(left, right)
     tolerance = 32sqrt(eps(promote_type(eltype(left), eltype(right))))
     return all(abs(left[i] - right[i]) <= tolerance for i in eachindex(left, right))
@@ -1320,29 +912,6 @@ end
 
 _next_local_candidate!(candidates, state, ::BestLocalStarts, latest) =
     popfirst!(candidates)
-function _next_local_candidate!(
-    candidates,
-    state,
-    ::FarthestFromLatestMinimum,
-    latest,
-)
-    isnothing(latest) && return popfirst!(candidates)
-    workspace = state.workspace
-    latest_decoded = decode(state.core.problem.space, latest)
-    farthest = firstindex(candidates)
-    farthest_distance = -Inf
-    for position in eachindex(candidates)
-        candidate = candidates[position]
-        point = @view workspace.sample_points[:, candidate]
-        decoded = decode(state.core.problem.space, point)
-        distance = sum(abs2(left - right) for (left, right) in zip(decoded, latest_decoded))
-        if distance > farthest_distance
-            farthest = position
-            farthest_distance = distance
-        end
-    end
-    return popat!(candidates, farthest)
-end
 
 function update_minimizer_pool!(state::SHGOState)
     workspace = state.workspace

@@ -23,11 +23,15 @@ include("smbo_batches.jl")
 include("checkpoint.jl")
 include("sceua.jl")
 include("shgo.jl")
-include("compat/python_sambo.jl")
 include("extras/topological_multistart.jl")
 include("diagnostics.jl")
 
-const PublicSolverState = Union{SMBOState,SCEUAState,SHGOState}
+const PublicSolverState = Union{
+    SMBOState,
+    SCEUAState,
+    SHGOState,
+    TopologicalMultistartState,
+}
 
 """Return the problem owned by a live solver state."""
 problem(state::PublicSolverState) = state.core.problem
@@ -82,7 +86,7 @@ export OptimizationSense, Minimize, Maximize
 export NonfinitePolicy, ErrorOnNonfinite, PenalizeNonfinite, AllowInfinite
 export NumericalFailureError
 export Box, SearchSpace, Continuous, Choices
-export SMBO, SCEUA, SHGO
+export SMBO, SCEUA, SHGO, TopologicalMultistart
 export GaussianProcessSurrogate, LowerConfidenceBound, RandomizedLowerConfidenceBound
 export GreedyMean, DistanceUncertainty, clone_surrogate
 export fitmodel, predictmean!, predictmeanvariance!, predictionworkspace

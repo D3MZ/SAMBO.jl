@@ -29,9 +29,70 @@ end
     @test !profile.divide_automatic_local_budget
     @test profile.minimum_homology_growth == 0
     @test profile.homology_patience == 1
+    @test profile.maximum_refinements == 1
     @test profile.convergence_tolerance == 1e-6
     @test profile.convergence_window == 30
     @test profile.local_solver isa SAMBO.QuasiNewtonSearch
+    @test_throws ArgumentError SHGO(maximum_refinements=-1)
+
+    one_refinement = solve(
+        Problem(x -> sum(abs2, x), Box(zeros(2), ones(2))),
+        SHGO(
+            SAMBO.PythonSAMBOProfile();
+            sampling_points=12,
+            local_starts=1,
+            local_budget=1,
+            convergence_tolerance=0.0,
+            convergence_window=0,
+        );
+        maximum_evaluations=100,
+        rng=MersenneTwister(39),
+    )
+    @test one_refinement.statistics.refinements == 1
+    @test retcode(one_refinement) == :success
+
+    box_problem = Problem(
+        x -> abs2(x[2] - 3),
+        Box([2.0, -5.0], [2.0, 5.0]),
+    )
+    search_problem = Problem(
+        x -> abs2(x.y - 3),
+        SearchSpace(x=Continuous(2.0, 2.0), y=Continuous(-5.0, 5.0)),
+    )
+    box_state = init(
+        box_problem,
+        SHGO();
+        maximum_evaluations=40,
+        rng=MersenneTwister(38),
+    )
+    search_state = init(
+        search_problem,
+        SHGO();
+        maximum_evaluations=40,
+        rng=MersenneTwister(38),
+    )
+    start = [0.0, 0.1]
+    box_point, box_value = SAMBO.local_minimize!(
+        box_state,
+        SAMBO.QuasiNewtonSearch(),
+        start,
+        box_problem.objective(decode(box_problem.space, start)),
+        zeros(2),
+        ones(2),
+        40,
+    )
+    search_point, search_value = SAMBO.local_minimize!(
+        search_state,
+        SAMBO.QuasiNewtonSearch(),
+        start,
+        search_problem.objective(decode(search_problem.space, start)),
+        zeros(2),
+        ones(2),
+        40,
+    )
+    @test box_point[1] == search_point[1] == 0
+    @test box_point ≈ search_point atol=1e-10
+    @test box_value ≈ search_value atol=1e-10
 
     adjacency = [Int[] for _ in 1:8]
     insertion_order = Int[]

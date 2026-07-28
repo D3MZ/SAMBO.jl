@@ -122,9 +122,8 @@ function restore(problem::Problem, saved::SMBOCheckpoint)
         cardinality,
         TX,
     )
-    feasible_indices = _tracks_occupancy(
+    feasible_indices = _tracks_finite_space(
         saved.algorithm.repeat_policy,
-        saved.algorithm.candidate_equality,
         cardinality,
     ) ? _finite_feasible_indices(problem) : nothing
     for column in 1:core.trace.count

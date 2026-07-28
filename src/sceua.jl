@@ -242,16 +242,15 @@ function _python_complex_members!(members, population_size, complexes, complex_i
     return count
 end
 
-function _sceua_theta(space::Box)
-    width = zero(eltype(space.lower))
-    for index in eachindex(space.lower, space.upper)
-        width = max(width, space.upper[index] - space.lower[index])
+function _sceua_theta(space)
+    width = zero(latenttype(space))
+    for index in 1:dimension(space)
+        width = max(width, _coordinate_width(space, index))
     end
     width <= 0 && return 0.2
     log_width = log10(width)
     return clamp(0.2 + 0.1 * (log_width - 2), 0.2, 0.5)
 end
-_sceua_theta(::SearchSpace) = 0.2
 
 function _reflection!(proposal, centroid, worst, coefficient)
     @. proposal = centroid + coefficient * (centroid - worst)
@@ -268,18 +267,9 @@ function _sceua_span(workspace, space)
     total_span = zero(eltype(workspace.population))
     for row in axes(workspace.population, 1)
         values = @view workspace.population[row, :]
-        total_span += maximum(values) - minimum(values)
-    end
-    return total_span
-end
-function _sceua_span(workspace, space::Box)
-    isempty(workspace.values) && return Inf
-    total_span = zero(eltype(workspace.population))
-    for row in axes(workspace.population, 1)
-        values = @view workspace.population[row, :]
         total_span +=
             (maximum(values) - minimum(values)) *
-            (space.upper[row] - space.lower[row])
+            _coordinate_width(space, row)
     end
     return total_span
 end

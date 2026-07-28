@@ -6,7 +6,7 @@ The equivalent lifecycle is
 advances one solver iteration.
 
 Algorithms are immutable values: `SMBO()`, `SCEUA()`, `SHGO()`, and
-`SAMBO.TopologicalMultistart()`. Solver and workspace state is mutable. Common options
+`TopologicalMultistart()`. Solver and workspace state is mutable. Common options
 include `maximum_evaluations`, `maximum_iterations`, tolerances, `time_limit`,
 initial observations, `rng`, `executor`, and `callback`.
 

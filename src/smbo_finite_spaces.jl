@@ -92,6 +92,10 @@ _tracks_occupancy(state::SMBOState) = _tracks_occupancy(
     state.algorithm.candidate_equality,
     space_cardinality(state.core.problem.space),
 )
+_tracks_finite_space(::AllowRepeatedEvaluations, cardinality) = false
+_tracks_finite_space(::AvoidRepeatedEvaluations, cardinality) =
+    !isnothing(cardinality)
+
 _occupied_count(state::SMBOState) =
     _tracks_occupancy(state) ? length(state.occupied) : _occupied_count_scan(state)
 function _occupy!(state::SMBOState, points)
@@ -139,12 +143,12 @@ function _unused_finite_candidates(state::SMBOState, requested)
     isnothing(state.feasible_indices) && return nothing
     capacity = min(
         requested,
-        length(state.feasible_indices) - length(state.occupied),
+        length(state.feasible_indices) - _occupied_count(state),
     )
     selected = Vector{Int}(undef, max(capacity, 0))
     seen = 0
     for index in state.feasible_indices
-        index in state.occupied && continue
+        _finite_index_occupied(state, index) && continue
         seen += 1
         if seen <= capacity
             selected[seen] = index
@@ -154,5 +158,36 @@ function _unused_finite_candidates(state::SMBOState, requested)
                 (selected[replacement] = index)
         end
     end
-    return _finite_points(state.core.problem, selected)
+    return _finite_points(
+        state.core.problem,
+        @view(selected[1:min(seen, capacity)]),
+    )
+end
+
+_finite_index_occupied(state, index) =
+    _finite_index_occupied(state, index, state.occupied)
+_finite_index_occupied(state, index, occupied::BitSet) = index in occupied
+function _finite_index_occupied(state, index, occupied)
+    space = state.core.problem.space
+    candidate = Vector{eltype(state.core.trace.latent_points)}(
+        undef,
+        dimension(space),
+    )
+    canonical_latent!(candidate, space, index)
+    equality = state.algorithm.candidate_equality
+    trace = state.core.trace
+    for column in 1:trace.count
+        _same_candidate(
+            candidate,
+            @view(trace.latent_points[:, column]),
+            equality,
+        ) &&
+            return true
+    end
+    for pending in values(state.pending), column in axes(pending.points, 2)
+        pending.unresolved[column] || continue
+        _same_candidate(candidate, @view(pending.points[:, column]), equality) &&
+            return true
+    end
+    return false
 end

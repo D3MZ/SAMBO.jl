@@ -99,6 +99,17 @@ dimension(space::Box) = length(space.lower)
 dimension(space::SearchSpace) = length(space.dimensions)
 latenttype(space::Box{T}) where {T} = T
 latenttype(::SearchSpace{T}) where {T} = T
+_continuous_space(::Box) = true
+_iscontinuous(::Continuous) = true
+_iscontinuous(::Union{AbstractRange,Choices}) = false
+_continuous_space(space::SearchSpace) = all(_iscontinuous, space.dimensions)
+_coordinate_width(space::Box, axis) =
+    space.upper[axis] - space.lower[axis]
+_coordinate_width(space::SearchSpace, axis) =
+    _coordinate_width(space.dimensions[axis])
+_coordinate_width(dimension::Continuous) =
+    dimension.upper - dimension.lower
+_coordinate_width(::Union{AbstractRange,Choices}) = 1
 dimensionnames(::Box) = nothing
 _dimensionnames(dimensions::NamedTuple) = propertynames(dimensions)
 _dimensionnames(dimensions::Tuple) = nothing

@@ -26,11 +26,11 @@ FIELDS = (
     "sampling_stream_hash",
     "sampling_stream_capability",
     "budget",
-    "evaluation",
     "evaluations",
     "minimum",
     "optimum",
     "quality_threshold",
+    "retcode",
 )
 
 
@@ -45,18 +45,18 @@ def result_row(runtime, rotation_id=1, trial_id=1, **overrides):
         "trial_id": trial_id,
         "rotation_id": rotation_id,
         "configuration_hash": (
-            "python-sambo-1.25.2-matched-v6:SMBO:100:6-rotations"
+            "python-sambo-1.25.2-matched-v7:SMBO:100:6-rotations"
         ),
         "initial_design_hash": f"design-{rotation_id}-{trial_id}",
         "initial_design_capability": "injected-counted-lhs",
         "sampling_stream_hash": "none",
         "sampling_stream_capability": "not-applicable",
         "budget": 100,
-        "evaluation": 100,
         "evaluations": 100,
         "minimum": 0.1,
         "optimum": 0.0,
         "quality_threshold": 0.25,
+        "retcode": "success",
     }
     row.update(overrides)
     return row
@@ -188,20 +188,29 @@ class ComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "matrices differ"):
             compare.main(*paths)
 
-    def test_evaluation_must_match_evaluations(self):
-        paths = self.paired_paths(
-            trial_rows("Julia", [0.1] * 10, evaluation=99),
-            trial_rows("Python", [0.1] * 10),
-        )
-        with self.assertRaisesRegex(SystemExit, "evaluation/evaluations"):
-            compare.main(*paths)
-
     def test_only_one_terminal_row_per_trial_is_accepted(self):
         rows = trial_rows("Julia", [0.1] * 10)
-        rows.append(dict(rows[0], evaluation=99, evaluations=99))
+        rows.append(dict(rows[0], evaluations=99))
         path = self.write("duplicate.csv", rows)
         with self.assertRaisesRegex(SystemExit, "duplicate comparison key"):
             compare.read_results(path)
+
+    def test_rotation_uses_median_of_paired_trial_differences(self):
+        julia = [1.0] * 6 + [1e10] * 4
+        python = [1.0] * 5 + [1e10] * 5
+        paths = self.paired_paths(
+            trial_rows("Julia", julia),
+            trial_rows("Python", python),
+        )
+        failures, summaries = compare.quality_threshold_gate(
+            compare.read_results(paths[0]),
+            compare.read_results(paths[1]),
+        )
+        self.assertFalse(failures)
+        self.assertEqual(
+            summaries[("sphere", "SMBO")]["worst_difference"],
+            0.0,
+        )
 
     def test_empty_and_malformed_files_are_rejected(self):
         empty = self.root / "empty.csv"

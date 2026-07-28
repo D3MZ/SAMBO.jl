@@ -104,6 +104,47 @@ SAMBO.repair!(
         )
         @test isempty(ask!(state, 1))
         @test retcode(result(state)) == :space_exhausted
+
+        constrained_finite = SearchSpace(choice=1:100)
+        approximate = solve(
+            Problem(
+                point -> Float64(point.choice),
+                constrained_finite;
+                constraint=point -> point.choice <= 10,
+            ),
+            SMBO(
+                initial_points=1,
+                candidate_pool=32,
+                candidate_equality=SAMBO.ApproximateCandidateEquality(0.001),
+            );
+            maximum_evaluations=100,
+            rng=Xoshiro(6),
+        )
+        @test evaluation_count(approximate) == 10
+        @test retcode(approximate) == :space_exhausted
+        @test Set(
+            decode(
+                constrained_finite,
+                @view(latentpoints(trace(approximate))[:, column]),
+            ).choice for column in axes(latentpoints(trace(approximate)), 2)
+        ) == Set(1:10)
+
+        merged_approximate = solve(
+            Problem(
+                point -> Float64(point.choice),
+                constrained_finite;
+                constraint=point -> point.choice <= 10,
+            ),
+            SMBO(
+                initial_points=1,
+                candidate_pool=32,
+                candidate_equality=SAMBO.ApproximateCandidateEquality(0.02),
+            );
+            maximum_evaluations=100,
+            rng=Xoshiro(6),
+        )
+        @test 0 < evaluation_count(merged_approximate) < 10
+        @test retcode(merged_approximate) == :space_exhausted
     end
 
     @testset "categorical construction and contract" begin

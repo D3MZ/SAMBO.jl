@@ -3,6 +3,11 @@ using Test
 using Random
 using Tables
 
+Base.include(
+    SAMBO,
+    joinpath(@__DIR__, "..", "benchmark", "python_sambo_profile.jl"),
+)
+
 @testset "SAMBO" begin
     include("spaces.jl")
     include("surrogates.jl")

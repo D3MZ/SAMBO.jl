@@ -109,6 +109,8 @@ end
     end
 
     @testset "public extension protocol" begin
+        @test Base.isexported(SAMBO, :TopologicalMultistart)
+
         protocol_docs = join(
             (
                 read(joinpath(ROOT, "spec", "api.md"), String),

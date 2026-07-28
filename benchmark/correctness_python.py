@@ -8,7 +8,6 @@ import sys
 import numpy as np
 import sambo
 from sambo import minimize
-from scipy.stats.qmc import Halton
 
 DEFAULT_TRIALS = range(1, 11)
 ROTATION_IDS = range(1, 7)
@@ -205,8 +204,8 @@ def shared_halton_shift(dimensions, rotation_id, trial_id):
 
 class SharedShiftedHalton:
     def __init__(self, dimensions, rotation_id, trial_id):
-        self.sampler = Halton(dimensions, scramble=False)
-        self.sampler.fast_forward(1)
+        self.index = 1
+        self.bases = first_primes(dimensions)
         self.shift = shared_halton_shift(
             dimensions,
             rotation_id,
@@ -216,15 +215,40 @@ class SharedShiftedHalton:
     def __call__(self, count, dimensions):
         if dimensions != len(self.shift):
             raise ValueError("SHGO sampler dimension changed")
-        return (self.sampler.random(count) + self.shift) % 1
+        result = np.empty((count, dimensions))
+        for row, index in enumerate(range(self.index, self.index + count)):
+            for axis, base in enumerate(self.bases):
+                result[row, axis] = (
+                    radical_inverse(index, base) + self.shift[axis]
+                ) % 1.0
+        self.index += count
+        return result
+
+
+def first_primes(count):
+    primes = []
+    candidate = 2
+    while len(primes) < count:
+        if all(candidate % prime for prime in primes if prime * prime <= candidate):
+            primes.append(candidate)
+        candidate += 1
+    return tuple(primes)
+
+
+def radical_inverse(index, base):
+    inverse_base = 1.0 / base
+    factor = inverse_base
+    value = 0.0
+    while index > 0:
+        index, digit = divmod(index, base)
+        value += digit * factor
+        factor *= inverse_base
+    return value
 
 
 def coordinate_hash(coordinates):
-    values = np.asarray(coordinates, dtype=np.float64, order="C").ravel(
-        order="C"
-    )
-    canonical = (",".join(f"{value:.12f}" for value in values) + "\n").encode()
-    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+    canonical = np.asarray(coordinates, dtype=">f8", order="C")
+    return f"sha256:{hashlib.sha256(canonical.tobytes(order='C')).hexdigest()}"
 
 
 def shared_design_capability(algorithm):
@@ -284,10 +308,6 @@ def matched_method_kwargs(algorithm, dimensions, budget):
     raise ValueError(f"unknown matched algorithm: {algorithm}")
 
 
-def normalized_gap(value, optimum):
-    return max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
-
-
 def main(trials=DEFAULT_TRIALS):
     assert abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6
     for rotation_id in ROTATION_IDS:
@@ -321,16 +341,10 @@ def main(trials=DEFAULT_TRIALS):
             "sampling_stream_hash",
             "sampling_stream_capability",
             "budget",
-            "evaluation",
             "evaluations",
-            "iteration",
-            "best_value",
-            "normalized_gap",
             "minimum",
             "optimum",
             "quality_threshold",
-            "feasible",
-            "duplicate",
             "retcode",
         )
     )
@@ -398,7 +412,7 @@ def main(trials=DEFAULT_TRIALS):
                         "Python objective calls exceeded the requested budget"
                     )
                 configuration_hash = (
-                    f"python-sambo-1.25.2-matched-v6:{algorithm}:{budget}:"
+                    f"python-sambo-1.25.2-matched-v7:{algorithm}:{budget}:"
                     "6-rotations"
                 )
                 design_hash = (
@@ -435,15 +449,9 @@ def main(trials=DEFAULT_TRIALS):
                         sampling_capability,
                         budget,
                         evaluations,
-                        evaluations,
-                        evaluations,
-                        f"{best:.17g}",
-                        f"{normalized_gap(best, optimum):.17g}",
                         f"{best:.17g}",
                         optimum,
                         0.25,
-                        "true",
-                        "false",
                         getattr(result, "message", "completed"),
                     )
                 )

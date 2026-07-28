@@ -43,11 +43,6 @@ mutable struct TopologicalMultistartState{C,A,W}
     workspace::W
 end
 
-_continuous_space(::Box) = true
-_iscontinuous(::Continuous) = true
-_iscontinuous(::Union{AbstractRange,Choices}) = false
-_continuous_space(space::SearchSpace) = all(_iscontinuous, space.dimensions)
-
 function init(
     problem::Problem,
     algorithm::TopologicalMultistart;

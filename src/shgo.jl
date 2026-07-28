@@ -234,6 +234,7 @@ struct SHGO{S,T,L,M,B,P}
     local_budget::Int
     minimum_homology_growth::Int
     homology_patience::Int
+    maximum_refinements::Int
     minimization_schedule::M
     local_bounds::B
     local_start_policy::P
@@ -251,6 +252,7 @@ function SHGO(;
     local_budget=0,
     minimum_homology_growth=0,
     homology_patience=2,
+    maximum_refinements=0,
     minimize_every_iteration=true,
     minimization_schedule=nothing,
     local_bounds=GlobalBoxLocalBounds(),
@@ -268,6 +270,8 @@ function SHGO(;
         throw(ArgumentError("minimum_homology_growth must be nonnegative"))
     homology_patience > 0 ||
         throw(ArgumentError("homology_patience must be positive"))
+    maximum_refinements >= 0 ||
+        throw(ArgumentError("maximum_refinements must be nonnegative"))
     minimum_local_reserve >= -1 ||
         throw(ArgumentError("minimum_local_reserve must be at least -1"))
     isfinite(convergence_tolerance) && convergence_tolerance >= 0 ||
@@ -290,6 +294,7 @@ function SHGO(;
         local_budget,
         minimum_homology_growth,
         homology_patience,
+        maximum_refinements,
         schedule,
         local_bounds,
         local_start_policy,
@@ -757,6 +762,12 @@ function _local_gradient!(
     deltas = workspace.local_center
     count = 0
     for axis in 1:d
+        width = _local_coordinate_scale(core.problem.space, axis)
+        if iszero(width)
+            gradient[axis] = zero(TX)
+            deltas[axis] = zero(TX)
+            continue
+        end
         physical_step = max(
             TX(solver.finite_difference_step),
             sqrt(eps(TX)),
@@ -782,19 +793,20 @@ function _local_gradient!(
     _commit_batch!(core, @view(proposals[:, 1:count]), values)
     _shgo_mark_value_spread_converged!(state)
     center_loss = _loss(core.problem, value)
+    value_index = 0
     for axis in 1:d
+        width = _local_coordinate_scale(core.problem.space, axis)
+        iszero(width) && continue
+        value_index += 1
         gradient[axis] =
-            (_loss(core.problem, values[axis]) - center_loss) /
-            (deltas[axis] * _local_coordinate_scale(core.problem.space, axis))
+            (_loss(core.problem, values[value_index]) - center_loss) /
+            (deltas[axis] * width)
     end
     return count
 end
 
-_latent_finite_difference_step(space, axis, step) = step
-_local_coordinate_scale(space, axis) = one(latenttype(space))
-_local_coordinate_scale(space::Box, axis) =
-    space.upper[axis] - space.lower[axis]
-function _latent_finite_difference_step(space::Box, axis, step)
+_local_coordinate_scale(space, axis) = _coordinate_width(space, axis)
+function _latent_finite_difference_step(space, axis, step)
     width = _local_coordinate_scale(space, axis)
     return iszero(width) ? step : step / width
 end
@@ -822,13 +834,24 @@ function _quasi_newton_minimize!(
     core = state.core
     TX = eltype(core.trace.latent_points)
     d = length(start)
-    scales = TX[
+    widths = TX[
         _local_coordinate_scale(core.problem.space, axis)
         for axis in 1:d
     ]
+    active_dimensions = count(!iszero, widths)
+    active_dimensions == 0 && return copy(start), start_value
+    scales = map(width -> iszero(width) ? one(TX) : width, widths)
+    effective_lower = copy(lower)
+    effective_upper = copy(upper)
+    for axis in eachindex(widths)
+        if iszero(widths[axis])
+            effective_lower[axis] = start[axis]
+            effective_upper[axis] = start[axis]
+        end
+    end
     physical_start = start .* scales
-    physical_lower = lower .* scales
-    physical_upper = upper .* scales
+    physical_lower = effective_lower .* scales
+    physical_upper = effective_upper .* scales
     last_value = Ref(start_value)
     gradient = Vector{TX}(undef, d)
 
@@ -846,7 +869,7 @@ function _quasi_newton_minimize!(
                 upper,
             )
             return _loss(core.problem, last_value[]),
-                count == d ? copy(gradient) : nothing,
+                count == active_dimensions ? copy(gradient) : nothing,
                 count
         end
         proposal = @view state.workspace.local_candidates[:, 1]
@@ -876,7 +899,7 @@ function _quasi_newton_minimize!(
         initial_value=_loss(core.problem, start_value),
         max_iterations=typemax(Int),
         max_cost=min(budget, _remaining(core)),
-        gradient_cost=d,
+        gradient_cost=active_dimensions,
         gradient_tolerance=solver.gradient_tolerance,
         minimum_step=solver.minimum_step,
         value_tolerance=solver.gradient_tolerance,
@@ -1000,6 +1023,11 @@ function _step!(state::SHGOState)
     update_complex!(state)
     local_minimum_candidates(state)
     minimize_candidates!(state, state.algorithm.minimization_schedule)
+    if !_finished(state.core) &&
+            state.algorithm.maximum_refinements > 0 &&
+            state.workspace.refinements >= state.algorithm.maximum_refinements
+        state.core.retcode = :success
+    end
     if !_finished(state.core) &&
             state.workspace.refinements > 1 &&
             state.workspace.stagnant_homology_iterations >=

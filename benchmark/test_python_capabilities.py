@@ -120,6 +120,11 @@ class PythonCapabilityTests(unittest.TestCase):
             correctness.coordinate_hash(first),
             correctness.coordinate_hash(different),
         )
+        self.assertEqual(
+            correctness.coordinate_hash(np.array([[1.0]])),
+            "sha256:"
+            "54ade53a579f5389ecae3af42df9e96aa30fcf3fc02a7475afc18c3e4835f6f7",
+        )
 
     def test_shgo_sampling_stream_metadata_hashes_actual_coordinates(self):
         self.assertEqual(

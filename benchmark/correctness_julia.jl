@@ -1,8 +1,9 @@
 using Random
 using LinearAlgebra
-using Printf
 using SHA
 using SAMBO
+
+Base.include(SAMBO, joinpath(@__DIR__, "python_sambo_profile.jl"))
 
 const DEFAULT_TRIALS = 1:10
 const ROTATION_IDS = 1:6
@@ -101,6 +102,11 @@ function hartmann_preimage(point, rotation_id)
     return preimage
 end
 
+function canonical_objective(objective, lower, upper)
+    widths = upper .- lower
+    return latent -> objective(lower .+ latent .* widths)
+end
+
 function benchmark_cases()
     cases = NamedTuple[]
     for rotation_id in ROTATION_IDS
@@ -120,8 +126,12 @@ function benchmark_cases()
                 name="rotated_rastrigin5",
                 rotation_id,
                 problem=Problem(
-                    x -> rotated_rastrigin(x, rotation),
-                    Box(fill(-5.12, 5), fill(5.12, 5)),
+                    canonical_objective(
+                        x -> rotated_rastrigin(x, rotation),
+                        fill(-5.12, 5),
+                        fill(5.12, 5),
+                    ),
+                    Box(zeros(5), ones(5)),
                 ),
                 optimum=0.0,
             ),
@@ -129,8 +139,12 @@ function benchmark_cases()
                 name="rotated_rosenbrock5",
                 rotation_id,
                 problem=Problem(
-                    x -> rotated_rosenbrock(x, rotation),
-                    Box(fill(-3.0, 5), fill(3.0, 5)),
+                    canonical_objective(
+                        x -> rotated_rosenbrock(x, rotation),
+                        fill(-3.0, 5),
+                        fill(3.0, 5),
+                    ),
+                    Box(zeros(5), ones(5)),
                 ),
                 optimum=0.0,
             ),
@@ -207,13 +221,10 @@ end
 
 function coordinate_hash(coordinates)
     bytes = IOBuffer()
-    first = true
     for column in axes(coordinates, 2), axis in axes(coordinates, 1)
-        first || write(bytes, ',')
-        @printf(bytes, "%.12f", Float64(coordinates[axis, column]))
-        first = false
+        bits = reinterpret(UInt64, Float64(coordinates[axis, column]))
+        write(bytes, hton(bits))
     end
-    write(bytes, '\n')
     return "sha256:" * bytes2hex(sha256(take!(bytes)))
 end
 
@@ -268,9 +279,6 @@ end
 benchmark_trials(algorithm_name, trials) =
     Tuple(trials)
 
-normalized_gap(value, optimum) =
-    max(abs(value - optimum) / max(1, abs(optimum)), 1e-15)
-
 function main(io=stdout; trials=DEFAULT_TRIALS)
     abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6 ||
         error("Hartmann-6 reference minimum is inconsistent")
@@ -294,8 +302,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
         "rotation_id,trial_id,configuration_hash,initial_design_hash,",
         "initial_design_capability,sampling_stream_hash,",
         "sampling_stream_capability,",
-        "budget,evaluation,evaluations,iteration,best_value,normalized_gap,",
-        "minimum,optimum,quality_threshold,feasible,duplicate,retcode",
+        "budget,evaluations,minimum,optimum,quality_threshold,retcode",
     )
     for case in CASES,
             (algorithm_name, make_algorithm, budget) in ALGORITHMS,
@@ -348,7 +355,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
             )
         end
         configuration_hash =
-            "python-sambo-1.25.2-matched-v6:$algorithm_name:$budget:6-rotations"
+            "python-sambo-1.25.2-matched-v7:$algorithm_name:$budget:6-rotations"
         design_hash = supports_shared_design ?
             coordinate_hash(shared_initial_latent(case, initial_count, trial_id)) :
             "none"
@@ -361,12 +368,10 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
             )) :
             "none"
         best = Inf
-        iteration = 0
         for index in 1:result.trace.count
             result.trace.source[index] == KnownObservation && continue
             value = result.trace.objective_values[index]
             best = min(best, value)
-            iteration = max(iteration, result.trace.iterations[index])
         end
         evaluations = evaluation_count(result)
         println(
@@ -374,9 +379,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
             "Julia,$VERSION,$SOURCE_COMMIT,n/a,$(case.name),$algorithm_name,",
             "$(case.rotation_id),$trial_id,$configuration_hash,$design_hash,",
             "$design_capability,$sampling_hash,$sampling_capability,$budget,",
-            "$evaluations,$evaluations,$iteration,$best,",
-            "$(normalized_gap(best, case.optimum)),$best,$(case.optimum),",
-            "0.25,true,false,$(retcode(result))",
+            "$evaluations,$best,$(case.optimum),0.25,$(retcode(result))",
         )
     end
 end

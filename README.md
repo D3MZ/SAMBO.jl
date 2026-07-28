@@ -50,7 +50,7 @@ problem = Problem(f, Box(lower, upper))
 solve(problem, SCEUA(); maximum_evaluations=500)
 solve(problem, SMBO(); maximum_evaluations=500)
 solve(problem, SHGO(); maximum_evaluations=500)
-solve(problem, SAMBO.TopologicalMultistart(); maximum_evaluations=500)
+solve(problem, TopologicalMultistart(); maximum_evaluations=500)
 ```
 
 External or distributed evaluations use identified ask/tell batches:
@@ -192,8 +192,8 @@ Replace the saved files in `benchmark/results/` and run
 ### Cross-runtime solution-quality checks
 
 <sub>Scores are median final objectives across ten trials and six deterministic
-rotations. Within threshold counts rotations where Julia's median log regret is
-no more than 0.25 decades worse than Python's.</sub>
+rotations. Within threshold counts rotations where the median paired-trial
+Julia-minus-Python log-regret difference is no more than 0.25 decades.</sub>
 
 <!-- correctness-table:start -->
 | Algorithm | Problem | Known optimum | Julia median | Python median | Within threshold |
@@ -202,15 +202,17 @@ no more than 0.25 decades worse than Python's.</sub>
 | SCE-UA | Rotated Rastrigin-5 | 0 | 15.3486 | 16.3481 | 6/6 |
 | SCE-UA | Rotated Rosenbrock-5 | 0 | 4.98709 | 5.01705 | 6/6 |
 | SMBO | Hartmann-6 | −3.32237 | −2.3484 | −2.08296 | 6/6 |
-| SMBO | Rotated Rastrigin-5 | 0 | 36.0142 | 34.7514 | 6/6 |
-| SMBO | Rotated Rosenbrock-5 | 0 | 206.035 | 266.205 | 6/6 |
+| SMBO | Rotated Rastrigin-5 | 0 | 35.9339 | 34.7514 | 6/6 |
+| SMBO | Rotated Rosenbrock-5 | 0 | 203.894 | 266.205 | 6/6 |
 | SHGO | Hartmann-6 | −3.32237 | −3.32237 | −3.32237 | 6/6 |
-| SHGO | Rotated Rastrigin-5 | 0 | 10.9445 | 17.9092 | 6/6 |
-| SHGO | Rotated Rosenbrock-5 | 0 | 1.12496e−09 | 5.47839e−08 | 6/6 |
+| SHGO | Rotated Rastrigin-5 | 0 | 18.4067 | 17.9092 | 6/6 |
+| SHGO | Rotated Rosenbrock-5 | 0 | 4.33035e−09 | 7.28145e−08 | 6/6 |
 <!-- correctness-table:end -->
 
-- Uses matched algorithm settings, objectives, bounds, evaluation budgets, trial
-  identifiers, and six deterministic nonseparable rotations in both runtimes.
+- Uses matched objectives, bounds, evaluation budgets, trial identifiers, and
+  six deterministic nonseparable rotations in both runtimes.
+- SCE-UA and SMBO use matched algorithm settings. SHGO matches global sampling
+  inputs and wrapper-level settings, with runtime-native local minimizers.
 - SCE-UA and SMBO receive the same counted Latin-hypercube designs; SHGO
   receives the same shifted Halton stream.
 - Each row passes only when Julia is within the threshold on all six rotations.

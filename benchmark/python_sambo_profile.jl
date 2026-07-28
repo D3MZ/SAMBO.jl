@@ -1,4 +1,4 @@
-"""Internal policy used to reproduce SciPy's incremental Delaunay construction."""
+"""Benchmark-only policy used to reproduce SciPy's incremental Delaunay construction."""
 struct PythonIncrementalDelaunayTopology end
 struct FarthestFromLatestMinimum end
 struct PythonSAMBOProfile end
@@ -12,6 +12,16 @@ buildcomplex(points, ::PythonIncrementalDelaunayTopology) =
 
 """
 Configuration matching the effective SHGO policy used by Python SAMBO 1.25.2.
+
+It uses a seeded Owen-style digit scramble of a Halton design, one 80-sample
+refinement, four local starts, and the Python wrapper's 30-value/`1e-6`
+convergence check.
+
+This profile does not make the implementations identical: Julia's local search
+uses the native bounded L-BFGS/Armijo routine, while Python calls SciPy SLSQP.
+Their line searches and compound stopping tests differ. Julia and NumPy also
+use different random-number streams, so equal integer seeds do not imply
+identical scrambled sample coordinates.
 """
 function SHGO(::PythonSAMBOProfile; kwargs...)
     defaults = (
@@ -27,6 +37,7 @@ function SHGO(::PythonSAMBOProfile; kwargs...)
         local_start_policy=FarthestFromLatestMinimum(),
         minimum_homology_growth=0,
         homology_patience=1,
+        maximum_refinements=1,
         minimum_local_reserve=0,
         divide_automatic_local_budget=false,
         convergence_tolerance=1e-6,

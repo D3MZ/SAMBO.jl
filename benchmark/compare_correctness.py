@@ -4,7 +4,7 @@ import statistics
 import sys
 
 
-CONFIGURATION_PREFIX = "python-sambo-1.25.2-matched-v6:"
+CONFIGURATION_PREFIX = "python-sambo-1.25.2-matched-v7:"
 MINIMUM_TRIALS = 10
 REQUIRED_ROTATIONS = 6
 REGRET_FLOOR = 1e-6
@@ -23,6 +23,7 @@ REQUIRED_COLUMNS = (
     "runtime",
     "runtime_version",
     "source_commit",
+    "python_sambo_version",
     "problem",
     "algorithm",
     "rotation_id",
@@ -33,11 +34,11 @@ REQUIRED_COLUMNS = (
     "sampling_stream_hash",
     "sampling_stream_capability",
     "budget",
-    "evaluation",
     "evaluations",
     "minimum",
     "optimum",
     "quality_threshold",
+    "retcode",
 )
 
 
@@ -89,12 +90,7 @@ def read_results(path):
             _fail(f"duplicate comparison key: {key}")
         budget = _integer(row, "budget", key)
         evaluations = _integer(row, "evaluations", key)
-        evaluation = _integer(row, "evaluation", key)
         budget > 0 or _fail(f"invalid budget for {key}")
-        evaluations == evaluation or _fail(
-            f"evaluation/evaluations mismatch for {key}: "
-            f"evaluation={evaluation}, evaluations={evaluations}"
-        )
         0 < evaluations <= budget or _fail(
             f"evaluations outside budget for {key}: "
             f"evaluations={evaluations}, budget={budget}"
@@ -109,6 +105,7 @@ def read_results(path):
             "initial_design_capability",
             "sampling_stream_hash",
             "sampling_stream_capability",
+            "retcode",
         ):
             if not row.get(field, "").strip():
                 _fail(f"missing {field} for {key}")
@@ -150,13 +147,11 @@ def quality_threshold_gate(julia, python):
         row = case[:2]
         samples_for_rotation = rotations.setdefault(
             rotation,
-            {"julia": [], "python": [], "row": julia_row},
+            {"differences": [], "row": julia_row},
         )
-        samples_for_rotation["julia"].append(
+        samples_for_rotation["differences"].append(
             normalized_log_regret(julia_row, julia_key)
-        )
-        samples_for_rotation["python"].append(
-            normalized_log_regret(python_row, python_key)
+            - normalized_log_regret(python_row, python_key)
         )
         row_values = rows.setdefault(
             row,
@@ -176,7 +171,7 @@ def quality_threshold_gate(julia, python):
 
     failures = []
     for rotation, values in sorted(rotations.items()):
-        count = len(values["julia"])
+        count = len(values["differences"])
         if count < MINIMUM_TRIALS:
             failures.append(
                 f"quality threshold {rotation}: requires at least "
@@ -188,9 +183,7 @@ def quality_threshold_gate(julia, python):
             "quality_threshold",
             rotation,
         )
-        observed = statistics.median(values["julia"]) - statistics.median(
-            values["python"]
-        )
+        observed = statistics.median(values["differences"])
         passed = observed <= margin
         rows[rotation[:2]]["rotations"][rotation[2]] = {
             "trials": count,

@@ -257,9 +257,8 @@ function init(problem::Problem, algorithm::SMBO; initial_points=nothing, initial
         cardinality,
         T,
     )
-    feasible_indices = _tracks_occupancy(
+    feasible_indices = _tracks_finite_space(
         algorithm.repeat_policy,
-        algorithm.candidate_equality,
         cardinality,
     ) ? _finite_feasible_indices(problem) : nothing
     _initialize_occupancy!(
@@ -363,7 +362,7 @@ function ask!(state::SMBOState, requested::Integer=state.algorithm.batch_size)
         count
     else
         min(
-            length(state.feasible_indices) - length(state.occupied),
+            length(state.feasible_indices) - _occupied_count(state),
             max(count, state.algorithm.candidate_pool),
         )
     end
@@ -417,7 +416,12 @@ function ask!(state::SMBOState, requested::Integer=state.algorithm.batch_size)
     candidates = _deduplicate_candidates(state, candidates, count)
     count = size(candidates, 2)
     count == 0 && begin
-        !isnothing(cardinality) && _occupied_count(state) >= cardinality &&
+        (!isnothing(finite_candidates) ||
+            _space_exhausted(
+                state.algorithm.repeat_policy,
+                state,
+                cardinality,
+            )) &&
             (state.core.retcode = :space_exhausted)
         state.core.retcode == :running && throw(CandidateGenerationError(
             "candidate generator produced no usable candidates",

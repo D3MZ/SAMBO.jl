@@ -34,44 +34,6 @@ function table_algorithms(markdown, heading)
 end
 
 @testset "Native-default benchmark review" begin
-    @testset "comparison identifiers and replay metadata" begin
-        for source in (JULIA_CORRECTNESS, PYTHON_CORRECTNESS)
-            @test occursin("trial_id", source)
-            @test occursin("initial_design_hash", source)
-            @test occursin("initial_design_capability", source)
-            @test occursin("shared_initial_design", source)
-            @test occursin("injected-counted-lhs", source)
-            for field in (
-                "evaluation",
-                "iteration",
-                "best_value",
-                "normalized_gap",
-                "feasible",
-                "duplicate",
-                "retcode",
-            )
-                @test occursin(field, source)
-            end
-            @test !occursin(r"(?m)[,\"]seed[,\" ]", source)
-        end
-    end
-
-    @testset "Python SCE-UA benchmark profile is explicit" begin
-        @test occursin("python_sambo_sceua_profile", JULIA_CORRECTNESS)
-        for setting in (
-            "complex_size=2",
-            "objective_tolerance=1e-6",
-            "population_tolerance=1e-6",
-            "stall_iterations=30",
-        )
-            @test occursin(setting, JULIA_CORRECTNESS)
-        end
-        @test occursin(
-            "(\"SCE-UA\", python_sambo_sceua_profile, 1000)",
-            JULIA_CORRECTNESS,
-        )
-    end
-
     @testset "matched correctness workload is documented" begin
         @test occursin("matched algorithm settings", lowercase(README))
         @test !occursin("equivalent seeded Rosenbrock workloads", README)

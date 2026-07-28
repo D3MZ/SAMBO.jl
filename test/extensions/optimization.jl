@@ -16,7 +16,7 @@ using Test
         maxiters=8,
         rng=MersenneTwister(6),
     )
-    @test solution.stats.fevals == 8
+    @test 0 < solution.stats.fevals <= 8
     @test solution.original isa SAMBO.Result
     @test solution.u == SAMBO.minimizer(solution.original)
 

@@ -559,8 +559,30 @@ function predictmeanvariance!(
     solved_kernel =
         @view workspace.solved_kernel[1:observations, 1:candidates]
     copyto!(solved_kernel, kernel)
-    ldiv!(model.factor.L, solved_kernel)
     T = eltype(solved_kernel)
+    if !(T <: LinearAlgebra.BlasFloat)
+        ldiv!(model.factor.L, solved_kernel)
+    elseif model.factor.uplo == 'U'
+        BLAS.trsm!(
+            'L',
+            'U',
+            'T',
+            'N',
+            one(T),
+            model.factor.factors,
+            solved_kernel,
+        )
+    else
+        BLAS.trsm!(
+            'L',
+            'L',
+            'N',
+            'N',
+            one(T),
+            model.factor.factors,
+            solved_kernel,
+        )
+    end
     for column in axes(solved_kernel, 2)
         latent_variance = max(
             model.amplitude - sum(abs2, @view solved_kernel[:, column]),

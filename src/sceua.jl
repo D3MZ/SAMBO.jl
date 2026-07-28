@@ -55,7 +55,6 @@ mutable struct SCEUAWorkspace{TX,TY}
     scratch_values::Vector{TY}
     members::Vector{Int}
     centroid::Vector{TX}
-    proposal::Vector{TX}
     initialized::Bool
     finite_feasible::Union{Nothing,Vector{Int}}
     occupied::BitSet
@@ -98,7 +97,6 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
         Matrix{TX}(undef, d, population_size + 1),
         Vector{TY}(undef, population_size + 1),
         Vector{Int}(undef, population_size + 1),
-        Vector{TX}(undef, d),
         Vector{TX}(undef, d),
         false,
         finite_feasible,
@@ -316,6 +314,9 @@ function step!(state::SCEUAState)
     complexes = min(workspace.complexes, population_size)
     theta = _sceua_theta(core.problem.space)
     members = workspace.members
+    proposal_matrix =
+        @view workspace.scratch_population[:, population_size+1:population_size+1]
+    proposal = @view proposal_matrix[:, 1]
     core.iteration += 1
     evolved = false
     for complex_index in 1:complexes
@@ -334,7 +335,6 @@ function step!(state::SCEUAState)
         end
         centroid ./= member_count - 1
 
-        proposal = workspace.proposal
         worst = @view workspace.population[:, worst_index]
         @. proposal =
             centroid + state.algorithm.reflection * (centroid - worst)
@@ -349,7 +349,6 @@ function step!(state::SCEUAState)
         ) || continue
         _remaining(core) == 0 && return state
         evolved = true
-        proposal_matrix = reshape(proposal, :, 1)
         proposal_value = @view workspace.scratch_values[1:1]
         _evaluate_batch!(proposal_value, core, proposal_matrix)
         _commit_batch!(core, proposal_matrix, proposal_value)

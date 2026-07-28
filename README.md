@@ -229,9 +229,9 @@ python3 benchmark/compare_correctness.py "$quality_dir/native-julia.csv" "$quali
 ## Lines of Code Over Time
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/loc-history-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset=".github/loc-history-light.svg">
-  <img src=".github/loc-history.svg" alt="Lines of code over time">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/D3MZ/SAMBO.jl/loc-assets/.github/loc-history-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/D3MZ/SAMBO.jl/loc-assets/.github/loc-history-light.svg">
+  <img src="https://raw.githubusercontent.com/D3MZ/SAMBO.jl/loc-assets/.github/loc-history.svg" alt="Lines of code over time">
 </picture>
 
 ## License

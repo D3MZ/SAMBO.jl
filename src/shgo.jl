@@ -217,10 +217,6 @@ struct FixedShiftDesign{S,V}
 end
 advance(design::FixedShiftDesign, count) =
     FixedShiftDesign(advance(design.design, count), design.shift)
-struct FixedScrambledHaltonDesign
-    skip::Int
-    seed::UInt64
-end
 struct GlobalBoxLocalBounds end
 struct TopographicalLocalBounds end
 struct BestLocalStarts end
@@ -316,7 +312,7 @@ function finalize_local_search!(state, ::MinimizeAtTermination)
     return update_minimizer_pool!(state)
 end
 
-mutable struct SHGOWorkspace{TX,TY}
+mutable struct SHGOWorkspace{TX,TY,S}
     sample_points::Matrix{TX}
     sample_values::Vector{TY}
     sample_count::Int
@@ -330,7 +326,7 @@ mutable struct SHGOWorkspace{TX,TY}
     homology_rank_differential::Int
     stagnant_homology_iterations::Int
     initialized_observations::Int
-    sampling_shift::Any
+    sampling::S
     local_center::Vector{TX}
     local_lower::Vector{TX}
     local_upper::Vector{TX}
@@ -358,7 +354,7 @@ function init(
     _seed_initial!(core, initial_points, initial_values)
     TX = eltype(core.trace.latent_points)
     TY = eltype(core.trace.objective_values)
-    sampling_shift = _sampling_shift(
+    sampling = _realize_sampling(
         core.rng,
         algorithm.sampling,
         TX,
@@ -385,7 +381,7 @@ function init(
         0,
         0,
         0,
-        sampling_shift,
+        sampling,
         Vector{TX}(undef, dimension(problem.space)),
         Vector{TX}(undef, dimension(problem.space)),
         Vector{TX}(undef, dimension(problem.space)),
@@ -396,15 +392,28 @@ function init(
     return SHGOState(core, algorithm, workspace)
 end
 
-function _sampling_shift(rng, ::RandomShiftedSampling, ::Type{T}, dimensions) where {T}
+_realize_sampling(rng, sampling, ::Type{T}, dimensions) where {T} = sampling
+function _realize_sampling(
+    rng,
+    sampling::RandomShiftedSampling,
+    ::Type{T},
+    dimensions,
+) where {T}
     shift = Vector{T}(undef, dimensions)
     Random.rand!(rng, shift)
-    return shift
+    return FixedShiftDesign(sampling.design, shift)
 end
-_sampling_shift(rng, sampling, ::Type{T}, dimensions) where {T} =
-    zeros(T, dimensions)
-_sampling_shift(rng, design::ScrambledHaltonDesign, ::Type{T}, dimensions) where {T} =
-    rand(rng, UInt64) ⊻ design.seed
+function _realize_sampling(
+    rng,
+    sampling::ScrambledHaltonDesign,
+    ::Type,
+    dimensions,
+)
+    return ScrambledHaltonDesign(
+        skip=sampling.skip,
+        seed=rand(rng, UInt64) ⊻ sampling.seed,
+    )
+end
 
 function sample!(
     rng,
@@ -419,16 +428,6 @@ function sample!(
             one(eltype(destination)),
         )
     end
-    return _canonicalize_samples!(destination, space)
-end
-
-function sample!(
-    rng,
-    destination::AbstractMatrix,
-    design::FixedScrambledHaltonDesign,
-    space,
-)
-    _scrambled_halton!(destination, design.skip, design.seed)
     return _canonicalize_samples!(destination, space)
 end
 
@@ -465,7 +464,7 @@ function _sampling_points_per_refinement(state::SHGOState)
     configured = state.algorithm.sampling_points
     return configured == 0 ?
         automatic_sampling_count(
-            dimension(state.core.problem.space),
+            length(active_dimensions(state.core.problem.space)),
             _remaining(state.core),
         ) :
         configured
@@ -485,29 +484,8 @@ function automatic_sampling_count(dimension_count::Integer, remaining::Integer)
     return min(count + 1, Int(remaining))
 end
 
-function _shgo_sampling_design(state::SHGOState)
-    skip = state.workspace.sample_count
-    return advance(state.algorithm.sampling, skip)
-end
-advance(sampling::RandomShiftedSampling, count) =
-    RandomShiftedSampling(advance(sampling.design, count))
-function _shgo_sampling_design(
-    state::SHGOState{C,<:SHGO{<:RandomShiftedSampling}},
-) where {C}
-    sampling = state.algorithm.sampling
-    return FixedShiftDesign(
-        advance(sampling.design, state.workspace.sample_count),
-        state.workspace.sampling_shift,
-    )
-end
-function _shgo_sampling_design(
-    state::SHGOState{C,<:SHGO{<:ScrambledHaltonDesign}},
-) where {C}
-    return FixedScrambledHaltonDesign(
-        state.algorithm.sampling.skip + state.workspace.sample_count,
-        state.workspace.sampling_shift,
-    )
-end
+_shgo_sampling_design(state::SHGOState) =
+    advance(state.workspace.sampling, state.workspace.sample_count)
 
 function refine_sampling!(state::SHGOState)
     _initialize_shgo_observations!(state)
@@ -577,10 +555,13 @@ end
 function update_complex!(state::SHGOState)
     workspace = state.workspace
     workspace.sample_count == 0 && return state
-    workspace.complex = buildcomplex(
-        @view(workspace.sample_points[:, 1:workspace.sample_count]),
-        state.algorithm.topology,
-    )
+    active = active_dimensions(state.core.problem.space)
+    workspace.complex = isempty(active) ?
+        NeighborComplex([Int[] for _ in 1:workspace.sample_count]) :
+        buildcomplex(
+            @view(workspace.sample_points[active, 1:workspace.sample_count]),
+            state.algorithm.topology,
+        )
     return state
 end
 
@@ -753,62 +734,42 @@ function _local_gradient!(
     value,
     lower,
     upper,
+    active,
+    widths,
 )
     core = state.core
     workspace = state.workspace
     TX = eltype(center)
-    d = length(center)
     proposals = workspace.local_candidates
     deltas = workspace.local_center
-    count = 0
-    for axis in 1:d
-        width = _local_coordinate_scale(core.problem.space, axis)
-        if iszero(width)
-            gradient[axis] = zero(TX)
-            deltas[axis] = zero(TX)
-            continue
-        end
+    for (position, axis) in pairs(active)
         physical_step = max(
             TX(solver.finite_difference_step),
             sqrt(eps(TX)),
         )
-        h = _latent_finite_difference_step(
-            core.problem.space,
-            axis,
-            physical_step,
-        )
+        h = physical_step / widths[position]
         delta = center[axis] + h <= upper[axis] ? h : -h
         center[axis] + delta >= lower[axis] || return 0
-        count += 1
-        proposal = @view proposals[:, count]
+        proposal = @view proposals[:, position]
         copyto!(proposal, center)
         proposal[axis] += delta
         _canonicalize!(proposal, core.problem.space)
         deltas[axis] = proposal[axis] - center[axis]
         deltas[axis] != zero(TX) || return 0
     end
+    count = length(active)
     values = @view workspace.local_values[1:count]
     _evaluate_batch!(values, core, @view(proposals[:, 1:count]))
     core.iteration += 1
     _commit_batch!(core, @view(proposals[:, 1:count]), values)
     _shgo_mark_value_spread_converged!(state)
     center_loss = _loss(core.problem, value)
-    value_index = 0
-    for axis in 1:d
-        width = _local_coordinate_scale(core.problem.space, axis)
-        iszero(width) && continue
-        value_index += 1
-        gradient[axis] =
-            (_loss(core.problem, values[value_index]) - center_loss) /
-            (deltas[axis] * width)
+    for (position, axis) in pairs(active)
+        gradient[position] =
+            (_loss(core.problem, values[position]) - center_loss) /
+            (deltas[axis] * widths[position])
     end
     return count
-end
-
-_local_coordinate_scale(space, axis) = _coordinate_width(space, axis)
-function _latent_finite_difference_step(space, axis, step)
-    width = _local_coordinate_scale(space, axis)
-    return iszero(width) ? step : step / width
 end
 
 function _quasi_newton_minimize!(
@@ -833,30 +794,23 @@ function _quasi_newton_minimize!(
     end
     core = state.core
     TX = eltype(core.trace.latent_points)
-    d = length(start)
+    active = active_dimensions(core.problem.space)
+    isempty(active) && return copy(start), start_value
     widths = TX[
-        _local_coordinate_scale(core.problem.space, axis)
-        for axis in 1:d
+        _coordinate_width(core.problem.space, axis)
+        for axis in active
     ]
-    active_dimensions = count(!iszero, widths)
-    active_dimensions == 0 && return copy(start), start_value
-    scales = map(width -> iszero(width) ? one(TX) : width, widths)
-    effective_lower = copy(lower)
-    effective_upper = copy(upper)
-    for axis in eachindex(widths)
-        if iszero(widths[axis])
-            effective_lower[axis] = start[axis]
-            effective_upper[axis] = start[axis]
-        end
-    end
-    physical_start = start .* scales
-    physical_lower = effective_lower .* scales
-    physical_upper = effective_upper .* scales
+    physical_start = start[active] .* widths
+    physical_lower = lower[active] .* widths
+    physical_upper = upper[active] .* widths
     last_value = Ref(start_value)
-    gradient = Vector{TX}(undef, d)
+    gradient = Vector{TX}(undef, length(active))
 
     evaluate = function(point, gradient_required)
-        latent = point ./ scales
+        latent = copy(start)
+        for (position, axis) in pairs(active)
+            latent[axis] = point[position] / widths[position]
+        end
         _canonicalize!(latent, core.problem.space)
         if gradient_required
             count = _local_gradient!(
@@ -867,9 +821,11 @@ function _quasi_newton_minimize!(
                 last_value[],
                 lower,
                 upper,
+                active,
+                widths,
             )
             return _loss(core.problem, last_value[]),
-                count == active_dimensions ? copy(gradient) : nothing,
+                count == length(active) ? copy(gradient) : nothing,
                 count
         end
         proposal = @view state.workspace.local_candidates[:, 1]
@@ -899,7 +855,7 @@ function _quasi_newton_minimize!(
         initial_value=_loss(core.problem, start_value),
         max_iterations=typemax(Int),
         max_cost=min(budget, _remaining(core)),
-        gradient_cost=active_dimensions,
+        gradient_cost=length(active),
         gradient_tolerance=solver.gradient_tolerance,
         minimum_step=solver.minimum_step,
         value_tolerance=solver.gradient_tolerance,
@@ -907,7 +863,12 @@ function _quasi_newton_minimize!(
         reset_on_bad_curvature=true,
         stop=() -> _finished(core),
     )
-    return point ./ scales, _loss(core.problem.sense, loss)
+    result_point = copy(start)
+    for (position, axis) in pairs(active)
+        result_point[axis] = point[position] / widths[position]
+    end
+    _canonicalize!(result_point, core.problem.space)
+    return result_point, _loss(core.problem.sense, loss)
 end
 
 local_minimize!(
@@ -1006,20 +967,16 @@ function update_minimizer_pool!(state::SHGOState)
     return state
 end
 
-abstract type SHGOStepOutcome end
-struct Refined <: SHGOStepOutcome end
-struct EvaluationBudgetExhausted <: SHGOStepOutcome end
-
 function _step!(state::SHGOState)
-    _finished(state.core) && return state
-    required_vertices = dimension(state.core.problem.space) == 1 ?
-        2 : dimension(state.core.problem.space) + 2
+    _finished(state.core) && return false
+    dimensions = length(active_dimensions(state.core.problem.space))
+    required_vertices = dimensions <= 1 ? 2 : dimensions + 2
     state.workspace.sample_count + _remaining(state.core) < required_vertices &&
-        return EvaluationBudgetExhausted()
+        return false
     previous_samples = state.workspace.sample_count
     refine_sampling!(state)
     state.workspace.sample_count == previous_samples &&
-        return EvaluationBudgetExhausted()
+        return false
     update_complex!(state)
     local_minimum_candidates(state)
     minimize_candidates!(state, state.algorithm.minimization_schedule)
@@ -1034,7 +991,7 @@ function _step!(state::SHGOState)
                 state.algorithm.homology_patience
         state.core.retcode = :success
     end
-    return Refined()
+    return true
 end
 
 function step!(state::SHGOState)
@@ -1047,8 +1004,8 @@ function solve!(state::SHGOState)
         throw(ArgumentError("solve! requires an objective"))
     try
         while !_finished(state.core)
-            outcome = _step!(state)
-            if outcome isa EvaluationBudgetExhausted && !_finished(state.core)
+            refined = _step!(state)
+            if !refined && !_finished(state.core)
                 state.core.retcode = :evaluation_limit
             end
         end
@@ -1059,9 +1016,6 @@ function solve!(state::SHGOState)
     finalize_local_search!(state, state.algorithm.minimization_schedule)
     return result(state)
 end
-solve(problem::Problem, algorithm::SHGO; kwargs...) =
-    solve!(init(problem, algorithm; kwargs...))
-trace(state::SHGOState) = state.core.trace
 result(state::SHGOState) = _result(
     state.core,
     state.algorithm;

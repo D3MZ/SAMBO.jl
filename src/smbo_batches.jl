@@ -33,10 +33,30 @@ function _tell!(
     pending = _pending_batch(state, batch)
     selected = _validated_pending_indices(pending, indices)
     candidates = pending.points[:, selected]
+    return _commit_pending!(
+        state,
+        batch.identifier,
+        pending,
+        selected,
+        candidates,
+        values,
+        source,
+    )
+end
+
+function _commit_pending!(
+    state,
+    identifier,
+    pending,
+    selected,
+    candidates,
+    values,
+    source,
+)
     converted = _validated_values(state.core, candidates, values)
     length(selected) <= _remaining(state.core) ||
         throw(ArgumentError("completed candidates exceed the evaluation budget"))
-    _resolve_pending!(state, batch.identifier, pending, selected)
+    _resolve_pending!(state, identifier, pending, selected)
     state.core.iteration += 1
     _commit_batch!(state.core, candidates, converted; source)
     return state
@@ -44,20 +64,15 @@ end
 function tell!(state::SMBOState, batch::CandidateBatch, values)
     pending = _pending_batch(state, batch)
     if all(pending.unresolved)
-        converted = _validated_values(state.core, pending.points, values)
-        length(converted) <= _remaining(state.core) ||
-            throw(ArgumentError(
-                "completed candidates exceed the evaluation budget",
-            ))
-        delete!(state.pending, batch.identifier)
-        state.core.iteration += 1
-        _commit_batch!(
-            state.core,
+        return _commit_pending!(
+            state,
+            batch.identifier,
+            pending,
+            axes(pending.points, 2),
             pending.points,
-            converted;
-            source=ExternalEvaluation,
+            values,
+            ExternalEvaluation,
         )
-        return state
     end
     return _tell!(
         state,

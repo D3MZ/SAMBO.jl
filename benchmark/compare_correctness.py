@@ -123,10 +123,6 @@ def read_results(path):
     return results
 
 
-def _terminal_rows(rows):
-    return {case: (case, row) for case, row in rows.items()}
-
-
 def normalized_log_regret(row, key):
     minimum = _finite_float(row, "minimum", key)
     optimum = _finite_float(row, "optimum", key)
@@ -136,13 +132,11 @@ def normalized_log_regret(row, key):
 
 
 def quality_threshold_gate(julia, python):
-    julia_terminal = _terminal_rows(julia)
-    python_terminal = _terminal_rows(python)
     rotations = {}
     rows = {}
-    for case in sorted(julia_terminal):
-        julia_key, julia_row = julia_terminal[case]
-        python_key, python_row = python_terminal[case]
+    for case in sorted(julia):
+        julia_row = julia[case]
+        python_row = python[case]
         rotation = case[:3]
         row = case[:2]
         samples_for_rotation = rotations.setdefault(
@@ -150,8 +144,8 @@ def quality_threshold_gate(julia, python):
             {"differences": [], "row": julia_row},
         )
         samples_for_rotation["differences"].append(
-            normalized_log_regret(julia_row, julia_key)
-            - normalized_log_regret(python_row, python_key)
+            normalized_log_regret(julia_row, case)
+            - normalized_log_regret(python_row, case)
         )
         row_values = rows.setdefault(
             row,
@@ -163,10 +157,10 @@ def quality_threshold_gate(julia, python):
             },
         )
         row_values["julia_minima"].append(
-            _finite_float(julia_row, "minimum", julia_key)
+            _finite_float(julia_row, "minimum", case)
         )
         row_values["python_minima"].append(
-            _finite_float(python_row, "minimum", python_key)
+            _finite_float(python_row, "minimum", case)
         )
 
     failures = []
@@ -226,8 +220,8 @@ def quality_threshold_gate(julia, python):
 
 def validate_matrices(julia, python):
     failures = []
-    julia_cases = {key[:4] for key in julia}
-    python_cases = {key[:4] for key in python}
+    julia_cases = set(julia)
+    python_cases = set(python)
     if julia_cases != python_cases:
         failures.append(
             "correctness matrices differ: "
@@ -243,11 +237,9 @@ def validate_matrices(julia, python):
                     f"{runtime} input {key}: runtime={row.get('runtime')!r}"
                 )
 
-    julia_terminal = _terminal_rows(julia)
-    python_terminal = _terminal_rows(python)
-    for case in sorted(julia_terminal):
-        julia_key, julia_row = julia_terminal[case]
-        python_key, python_row = python_terminal[case]
+    for case in sorted(julia):
+        julia_row = julia[case]
+        python_row = python[case]
         for field in MATCHED_METADATA:
             if julia_row.get(field) != python_row.get(field):
                 failures.append(
@@ -255,8 +247,6 @@ def validate_matrices(julia, python):
                     f"Julia={julia_row.get(field)!r}, "
                     f"Python={python_row.get(field)!r}"
                 )
-        if julia_key[:4] != python_key[:4]:
-            failures.append(f"comparison keys differ for {case}")
     return failures
 
 

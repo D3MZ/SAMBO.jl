@@ -1,32 +1,3 @@
-struct SMBOCheckpoint{A,M,P,R,E,C,TR,SC,N,T,F,I,W,S,OS,TX,TY}
-    algorithm::A
-    model::M
-    pending::P
-    rng::R
-    executor::E
-    callback::C
-    trace::TR
-    criteria::SC
-    nonfinite::N
-    iteration::Int
-    retcode::Symbol
-    best_value::T
-    best_index::Int
-    last_significant_improvement_evaluation::Int
-    evaluations::Int
-    next_identifier::UInt64
-    observations_at_fit::Int
-    failures::F
-    initial_design::I
-    initial_design_cursor::Int
-    workspace::W
-    elapsed_seconds::Float64
-    space_signature::S
-    sense_type::OS
-    coordinate_type::TX
-    objective_type::TY
-end
-
 _descriptor_signature(dimension::Continuous) =
     (:continuous, dimension.lower, dimension.upper)
 _descriptor_signature(dimension::AbstractRange) =
@@ -48,45 +19,39 @@ _space_signature(space::SearchSpace) = (
 
 function checkpoint(state::SMBOState)
     core = state.core
-    return SMBOCheckpoint(
-        state.algorithm,
-        deepcopy(state.model),
-        deepcopy(state.pending),
-        deepcopy(core.rng),
-        core.executor,
-        core.callback,
-        _snapshot(core.trace),
-        core.criteria,
-        core.nonfinite,
-        core.iteration,
-        core.retcode,
-        core.best_value,
-        core.best_index,
-        core.last_significant_improvement_evaluation,
-        core.evaluations,
-        state.next_identifier,
-        state.observations_at_fit,
-        deepcopy(state.failures),
-        copy(state.initial_design),
-        state.initial_design_cursor,
-        deepcopy(state.workspace),
-        (time_ns() - core.started) / 1e9,
-        _space_signature(core.problem.space),
-        typeof(core.problem.sense),
-        eltype(core.trace.latent_points),
-        eltype(core.trace.objective_values),
+    return (
+        algorithm=state.algorithm,
+        model=deepcopy(state.model),
+        pending=deepcopy(state.pending),
+        rng=deepcopy(core.rng),
+        executor=core.executor,
+        callback=core.callback,
+        trace=_snapshot(core.trace),
+        criteria=core.criteria,
+        nonfinite=core.nonfinite,
+        iteration=core.iteration,
+        retcode=core.retcode,
+        best_value=core.best_value,
+        best_index=core.best_index,
+        last_significant_improvement_evaluation=
+            core.last_significant_improvement_evaluation,
+        evaluations=core.evaluations,
+        next_identifier=state.next_identifier,
+        observations_at_fit=state.observations_at_fit,
+        failures=deepcopy(state.failures),
+        initial_design=copy(state.initial_design),
+        initial_design_cursor=state.initial_design_cursor,
+        elapsed_seconds=(time_ns() - core.started) / 1e9,
+        space_signature=_space_signature(core.problem.space),
+        sense_type=typeof(core.problem.sense),
     )
 end
 
-function restore(problem::Problem, saved::SMBOCheckpoint)
+function restore(problem::Problem, saved)
     _space_signature(problem.space) == saved.space_signature ||
         throw(ArgumentError("checkpoint search space does not match the problem"))
     typeof(problem.sense) === saved.sense_type ||
         throw(ArgumentError("checkpoint optimization sense does not match the problem"))
-    latenttype(problem.space) === saved.coordinate_type ||
-        throw(ArgumentError("checkpoint coordinate type does not match the problem"))
-    eltype(saved.trace.objective_values) === saved.objective_type ||
-        throw(ArgumentError("checkpoint objective type metadata is inconsistent"))
     elapsed_nanoseconds = UInt64(round(saved.elapsed_seconds * 1e9))
     now = time_ns()
     started = now - min(now, elapsed_nanoseconds)
@@ -114,7 +79,13 @@ function restore(problem::Problem, saved::SMBOCheckpoint)
             copy(batch.unresolved),
         )
     end
-    workspace = deepcopy(saved.workspace)
+    TY = eltype(core.trace.objective_values)
+    workspace = _make_smbo_workspace(
+        saved.algorithm,
+        TX,
+        TY,
+        dimension(problem.space),
+    )
     cardinality = space_cardinality(problem.space)
     occupied = _occupancy(
         saved.algorithm.repeat_policy,

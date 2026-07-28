@@ -84,26 +84,6 @@ class BenchmarkReadmeTests(unittest.TestCase):
         )
         self.assertEqual(table.count("6/6"), 9)
 
-    def test_quality_section_can_be_replaced(self):
-        source = (
-            f"before\n{update_readme.QUALITY_START}\nold\n"
-            f"{update_readme.QUALITY_END}\nafter\n"
-        )
-        result = update_readme.replace_section(
-            source,
-            update_readme.QUALITY_START,
-            update_readme.QUALITY_END,
-            "new",
-        )
-        self.assertEqual(
-            update_readme.checked_section(
-                result,
-                update_readme.QUALITY_START,
-                update_readme.QUALITY_END,
-            ),
-            "new",
-        )
-
     def test_quality_check_allows_small_platform_drift(self):
         summaries = self.quality_summaries()
         table = update_readme.render_quality_table(summaries).replace(

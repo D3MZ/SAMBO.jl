@@ -155,26 +155,13 @@ end
 
 const CASES = benchmark_cases()
 
-function python_sambo_sceua_profile()
-    algorithm = SCEUA(
+const ALGORITHMS = (
+    ("SCE-UA", () -> SCEUA(
         complex_size=2,
         objective_tolerance=1e-6,
         population_tolerance=1e-6,
         stall_iterations=30,
-    )
-    @assert algorithm.complexes == 0
-    @assert algorithm.complex_size == 2
-    @assert algorithm.reflection == 1.0
-    @assert algorithm.contraction == 0.5
-    @assert algorithm.repair isa SAMBO.MoveTowardCentroid
-    @assert algorithm.objective_tolerance == 1e-6
-    @assert algorithm.population_tolerance == 1e-6
-    @assert algorithm.stall_iterations == 30
-    return algorithm
-end
-
-const ALGORITHMS = (
-    ("SCE-UA", python_sambo_sceua_profile, 1000),
+    ), 1000),
     ("SMBO", () -> SMBO(), 100),
     ("SHGO", () -> SHGO(SAMBO.PythonSAMBOProfile()), 1000),
 )
@@ -205,18 +192,6 @@ function shared_initial_latent(case, count, trial_id)
         end
     end
     return latent
-end
-
-function shared_initial_design(case, count, trial_id)
-    latent = shared_initial_latent(case, count, trial_id)
-    design = Vector{Vector{Float64}}(undef, count)
-    for column in 1:count
-        design[column] = decode(
-            case.problem.space,
-            @view(latent[:, column]),
-        )
-    end
-    return design
 end
 
 function coordinate_hash(coordinates)
@@ -276,9 +251,6 @@ function matched_algorithm(algorithm_name, make_algorithm, case, trial_id)
     )
 end
 
-benchmark_trials(algorithm_name, trials) =
-    Tuple(trials)
-
 function main(io=stdout; trials=DEFAULT_TRIALS)
     abs(hartmann6(HARTMANN6_MINIMIZER) + 3.322368011415515) < 1e-6 ||
         error("Hartmann-6 reference minimum is inconsistent")
@@ -306,11 +278,11 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
     )
     for case in CASES,
             (algorithm_name, make_algorithm, budget) in ALGORITHMS,
-            trial_id in benchmark_trials(algorithm_name, trials)
+            trial_id in trials
         design_capability = shared_design_capability(algorithm_name)
         supports_shared_design = design_capability == "injected-counted-lhs"
         sampling_capability = sampling_stream_capability(algorithm_name)
-        result = if supports_shared_design
+        initial_design = if supports_shared_design
             dimensions = SAMBO.dimension(case.problem.space)
             initial_count = if algorithm_name == "SCE-UA"
                 profile = make_algorithm()
@@ -325,6 +297,11 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
                     floor(Int, 40dimensions * max(1, log2(dimensions))),
                 )
             end
+            shared_initial_latent(case, initial_count, trial_id)
+        else
+            nothing
+        end
+        result = if supports_shared_design
             solve(
                 case.problem,
                 matched_algorithm(
@@ -333,11 +310,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
                     case,
                     trial_id,
                 );
-                initial_points=shared_initial_design(
-                    case,
-                    initial_count,
-                    trial_id,
-                ),
+                initial_points=initial_design,
                 maximum_evaluations=budget,
                 rng=Xoshiro(trial_id),
             )
@@ -357,7 +330,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
         configuration_hash =
             "python-sambo-1.25.2-matched-v7:$algorithm_name:$budget:6-rotations"
         design_hash = supports_shared_design ?
-            coordinate_hash(shared_initial_latent(case, initial_count, trial_id)) :
+            coordinate_hash(initial_design) :
             "none"
         sampling_hash = algorithm_name == "SHGO" ?
             coordinate_hash(shared_sampling_stream(
@@ -367,12 +340,7 @@ function main(io=stdout; trials=DEFAULT_TRIALS)
                 trial_id,
             )) :
             "none"
-        best = Inf
-        for index in 1:result.trace.count
-            result.trace.source[index] == KnownObservation && continue
-            value = result.trace.objective_values[index]
-            best = min(best, value)
-        end
+        best = minimum(result)
         evaluations = evaluation_count(result)
         println(
             io,

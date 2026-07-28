@@ -74,15 +74,19 @@ def render_table(julia, python):
     return "\n".join(lines)
 
 
+def section_parts(source, start, end):
+    before, separator, remainder = source.partition(start)
+    if not separator:
+        raise ValueError(f"README marker is missing: {start}")
+    section, separator, after = remainder.partition(end)
+    if not separator:
+        raise ValueError(f"README marker is missing: {end}")
+    return before, section.strip(), after
+
+
 def update(readme_path, julia_path, python_path):
     readme_path = Path(readme_path)
-    source = readme_path.read_text()
-    before, separator, remainder = source.partition(START)
-    if not separator:
-        raise ValueError("README benchmark start marker is missing")
-    _, separator, after = remainder.partition(END)
-    if not separator:
-        raise ValueError("README benchmark end marker is missing")
+    before, _, after = section_parts(readme_path.read_text(), START, END)
     table = render_table(read_rows(julia_path), read_rows(python_path))
     readme_path.write_text(f"{before}{START}\n{table}\n{END}{after}")
 
@@ -200,40 +204,22 @@ def check_quality_table(checked_in, summaries):
                 )
 
 
-def checked_section(readme, start, end):
-    _, separator, remainder = readme.partition(start)
-    if not separator:
-        raise ValueError(f"README marker is missing: {start}")
-    section, separator, _ = remainder.partition(end)
-    if not separator:
-        raise ValueError(f"README marker is missing: {end}")
-    return section.strip()
-
-
-def replace_section(readme, start, end, section):
-    before, separator, remainder = readme.partition(start)
-    if not separator:
-        raise ValueError(f"README marker is missing: {start}")
-    _, separator, after = remainder.partition(end)
-    if not separator:
-        raise ValueError(f"README marker is missing: {end}")
-    return f"{before}{start}\n{section}\n{end}{after}"
-
-
 def update_quality(readme_path, julia_path, python_path):
     readme_path = Path(readme_path)
+    before, _, after = section_parts(
+        readme_path.read_text(),
+        QUALITY_START,
+        QUALITY_END,
+    )
     readme_path.write_text(
-        replace_section(
-            readme_path.read_text(),
-            QUALITY_START,
-            QUALITY_END,
-            quality_table(julia_path, python_path),
-        )
+        f"{before}{QUALITY_START}\n"
+        f"{quality_table(julia_path, python_path)}\n"
+        f"{QUALITY_END}{after}"
     )
 
 
 def check_quality(readme_path, julia_path, python_path):
-    checked_in = checked_section(
+    _, checked_in, _ = section_parts(
         Path(readme_path).read_text(),
         QUALITY_START,
         QUALITY_END,

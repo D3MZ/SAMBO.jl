@@ -344,10 +344,13 @@ CorrectedMLJBase.predict(
         memory_restored = restore(problem, pristine)
         serialized_restored = restore(problem, roundtrip)
         values = [(point.x - 0.3)^2 for point in pending]
+        tell!(state, pending, values)
         tell!(memory_restored, pending, values)
         tell!(serialized_restored, pending, values)
+        original_batch = ask!(state, 1)
         memory_batch = ask!(memory_restored, 1)
         serialized_batch = ask!(serialized_restored, 1)
+        @test latentpoints(original_batch) == latentpoints(memory_batch)
         @test latentpoints(memory_batch) ==
             latentpoints(serialized_batch)
         @test typeof(memory_restored.core.callback) ==

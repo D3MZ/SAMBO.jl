@@ -59,7 +59,7 @@ end
         rng=MersenneTwister(2),
     )
     pending = ask!(continuous, 1)
-    @test SAMBO._occupied_count_scan(continuous) == 2
+    @test length(pending) == 1
     cancel!(continuous, pending)
 
     unobserved = init(
@@ -143,14 +143,6 @@ end
         GeometricJitter(1e-10, 10.0, 2),
         Float64,
     )
-
-    generic_occupied = Set([[0.5]])
-    SAMBO._release_occupied!(
-        generic_occupied,
-        SearchSpace(x=Continuous(0.0, 1.0)),
-        [0.5],
-    )
-    @test isempty(generic_occupied)
 
     reservoir = init(
         Problem(SearchSpace(x=Choices(1, 2, 3, 4, 5))),

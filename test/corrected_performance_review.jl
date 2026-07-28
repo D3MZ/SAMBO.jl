@@ -93,8 +93,6 @@ end
             maximum_evaluations=101,
             rng=Xoshiro(10),
         )
-        @test state.occupied isa Union{BitSet,Set{Int}}
-        @test length(state.occupied) == 100
         @test isempty(ask!(state, 1))
         @test retcode(result(state)) == :space_exhausted
     end

@@ -17,39 +17,19 @@ end
 Base.showerror(io::IO, error::NumericalFailureError) =
     print(io, error.message)
 
-struct UnaryObjective{F}
-    objective::F
-end
-struct ParameterizedObjective{F,P}
-    objective::F
+struct BoundCall{F,P}
+    callable::F
     parameters::P
 end
-@inline (objective::UnaryObjective)(point) =
-    objective.objective(point)
-@inline (objective::ParameterizedObjective)(point) =
-    objective.objective(point, objective.parameters)
-bind_objective(::Nothing, parameters) = nothing
-bind_objective(::Nothing, ::Nothing) = nothing
-bind_objective(objective, ::Nothing) = UnaryObjective(objective)
-bind_objective(objective, parameters) =
-    ParameterizedObjective(objective, parameters)
-
-struct UnaryConstraint{C}
-    constraint::C
-end
-struct ParameterizedConstraint{C,P}
-    constraint::C
-    parameters::P
-end
-@inline (constraint::UnaryConstraint)(point) =
-    constraint.constraint(point)
-@inline (constraint::ParameterizedConstraint)(point) =
-    constraint.constraint(point, constraint.parameters)
+@inline (bound::BoundCall)(point) =
+    bound.callable(point, bound.parameters)
+_bind(::Nothing, parameters) = nothing
+_bind(::Nothing, ::Nothing) = nothing
+_bind(callable, ::Nothing) = callable
+_bind(callable, parameters) = BoundCall(callable, parameters)
+bind_objective(objective, parameters) = _bind(objective, parameters)
 bind_constraint(constraint::Unconstrained, parameters) = constraint
-bind_constraint(constraint::Unconstrained, ::Nothing) = constraint
-bind_constraint(constraint, ::Nothing) = UnaryConstraint(constraint)
-bind_constraint(constraint, parameters) =
-    ParameterizedConstraint(constraint, parameters)
+bind_constraint(constraint, parameters) = _bind(constraint, parameters)
 
 struct Problem{F,S,C,P,O<:OptimizationSense}
     objective::F

@@ -3,11 +3,6 @@ using Test
 using Random
 using Tables
 
-Base.include(
-    SAMBO,
-    joinpath(@__DIR__, "..", "benchmark", "python_sambo_profile.jl"),
-)
-
 @testset "SAMBO" begin
     include("spaces.jl")
     include("surrogates.jl")
@@ -18,7 +13,6 @@ Base.include(
     include("corrected_allocation_review.jl")
     include("coverage_diag_eval.jl")
     include("coverage_sce_shgo.jl")
-    include("shgo_python_profile.jl")
     include("coverage_smbo_gp.jl")
     include("interoperability.jl")
     include("plotting.jl")

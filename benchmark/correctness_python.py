@@ -272,10 +272,6 @@ def shared_sampling_stream(dimensions, budget, rotation_id, trial_id):
     return sampler(budget, dimensions)
 
 
-def benchmark_trials(algorithm, trials):
-    return tuple(trials)
-
-
 def matched_method_kwargs(algorithm, dimensions, budget):
     if algorithm == "SCE-UA":
         return {
@@ -350,7 +346,7 @@ def main(trials=DEFAULT_TRIALS):
     )
     for problem, rotation_id, objective, bounds, optimum in CASES:
         for algorithm, method, budget in ALGORITHMS:
-            for trial_id in benchmark_trials(algorithm, trials):
+            for trial_id in trials:
                 design_capability = shared_design_capability(algorithm)
                 supports_shared_design = (
                     design_capability == "injected-counted-lhs"

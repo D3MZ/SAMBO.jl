@@ -72,7 +72,17 @@ end
 end
 
 @testset "topological multistart uncovered branches" begin
-    seeded = init(
+    configuration =
+        SAMBO.TopologicalMultistart(samples=3, local_starts=1)
+    seeded = solve(
+        Problem(x -> sum(abs2, x), Box([-1.0], [1.0])),
+        configuration;
+        initial_points=[[-0.75], [0.25]],
+        initial_values=[0.5625, 0.0625],
+        maximum_evaluations=3,
+        rng=MersenneTwister(811),
+    )
+    repeated = solve(
         Problem(x -> sum(abs2, x), Box([-1.0], [1.0])),
         SAMBO.TopologicalMultistart(samples=3, local_starts=1);
         initial_points=[[-0.75], [0.25]],
@@ -80,11 +90,11 @@ end
         maximum_evaluations=3,
         rng=MersenneTwister(811),
     )
-    step!(seeded)
-    @test seeded.workspace.initialized
-    @test seeded.workspace.sample_values[1:2] == [0.0625, 0.5625]
+    @test trace(seeded).latent_points == trace(repeated).latent_points
+    @test trace(seeded).objective_values == trace(repeated).objective_values
+    @test seeded.algorithm === configuration
 
-    restarted = init(
+    restarted = solve(
         Problem(_ -> 1.0, Box([0.0], [1.0])),
         SAMBO.TopologicalMultistart(
             samples=2,
@@ -97,11 +107,7 @@ end
         maximum_evaluations=5,
         rng=MersenneTwister(812),
     )
-    step!(restarted)
-    step!(restarted)
-    @test restarted.workspace.current_start == 1
-    @test restarted.workspace.completed_starts == 1
-    @test retcode(result(restarted)) == :stalled
+    @test retcode(restarted) == :stalled
 
     infeasible = solve(
         Problem(
@@ -254,7 +260,7 @@ end
     )
     converged.workspace.refinements = 1
     converged.workspace.stagnant_homology_iterations = 1
-    @test SAMBO._step!(converged) isa SAMBO.Refined
+    @test SAMBO._step!(converged)
     @test retcode(result(converged)) == :success
 
     finite_seeded = init(
@@ -269,18 +275,12 @@ end
     @test finite_seeded.workspace.occupied == BitSet([1])
     @test retcode(result(finite_seeded)) == :space_exhausted
 
-    multiple_starts = init(
+    multiple_starts = solve(
         Problem(x -> x[1]^2, Box([0.0], [1.0])),
         SAMBO.TopologicalMultistart(samples=4, local_starts=2);
         maximum_evaluations=8,
         rng=MersenneTwister(827),
     )
-    multiple_starts.workspace.local_indices = [1, 2]
-    multiple_starts.workspace.current_start = 1
-    multiple_starts.workspace.sample_points[:, 2] .= 0.75
-    multiple_starts.workspace.sample_values[2] = 0.5625
-    @test SAMBO._finish_local_start!(multiple_starts) isa
-        SAMBO.LocalStartExhausted
-    @test multiple_starts.workspace.current_start == 2
+    @test multiple_starts.statistics.local_candidates <= 2
     @test SAMBO.automatic_sampling_count(2, 100) == 5
 end

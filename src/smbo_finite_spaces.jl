@@ -56,50 +56,13 @@ _occupancy(
     ::ExactCandidateEquality,
     cardinality,
     ::Type{T},
-) where {T} = isnothing(cardinality) ? Set{Vector{T}}() : BitSet()
-_occupancy(policy, equality, cardinality, ::Type{T}) where {T} =
-    Set{Vector{T}}()
-
-function _occupied_count_scan(state::SMBOState)
-    occupied = empty(state.occupied)
-    trace = state.core.trace
-    for column in 1:trace.count
-        push!(occupied, collect(@view trace.latent_points[:, column]))
-    end
-    for pending in values(state.pending), column in axes(pending.points, 2)
-        pending.unresolved[column] &&
-            push!(occupied, collect(@view pending.points[:, column]))
-    end
-    return length(occupied)
-end
-_tracks_occupancy(
-    ::AllowRepeatedEvaluations,
-    equality,
-    cardinality,
-) = false
-_tracks_occupancy(
-    ::AvoidRepeatedEvaluations,
-    ::ExactCandidateEquality,
-    cardinality,
-) = !isnothing(cardinality)
-_tracks_occupancy(
-    ::AvoidRepeatedEvaluations,
-    equality,
-    cardinality,
-) = false
-_tracks_occupancy(state::SMBOState) = _tracks_occupancy(
-    state.algorithm.repeat_policy,
-    state.algorithm.candidate_equality,
-    space_cardinality(state.core.problem.space),
-)
+) where {T} = isnothing(cardinality) ? nothing : BitSet()
+_occupancy(policy, equality, cardinality, ::Type{T}) where {T} = nothing
 _tracks_finite_space(::AllowRepeatedEvaluations, cardinality) = false
 _tracks_finite_space(::AvoidRepeatedEvaluations, cardinality) =
     !isnothing(cardinality)
 
-_occupied_count(state::SMBOState) =
-    _tracks_occupancy(state) ? length(state.occupied) : _occupied_count_scan(state)
 function _occupy!(state::SMBOState, points)
-    _tracks_occupancy(state) || return state
     for column in axes(points, 2)
         _occupy!(
             state.occupied,
@@ -111,9 +74,8 @@ function _occupy!(state::SMBOState, points)
 end
 _occupy!(occupied::BitSet, space, point) =
     push!(occupied, canonical_index(space, point))
-_occupy!(occupied, space, point) = push!(occupied, collect(point))
+_occupy!(::Nothing, space, point) = nothing
 function _release_occupied!(state::SMBOState, pending, indices)
-    _tracks_occupancy(state) || return state
     for index in indices
         _release_occupied!(
             state.occupied,
@@ -125,26 +87,11 @@ function _release_occupied!(state::SMBOState, pending, indices)
 end
 _release_occupied!(occupied::BitSet, space, point) =
     delete!(occupied, canonical_index(space, point))
-_release_occupied!(occupied, space, point) =
-    delete!(occupied, collect(point))
-
-_space_exhausted(::AllowRepeatedEvaluations, state, cardinality) = false
-function _space_exhausted(
-    ::AvoidRepeatedEvaluations,
-    state,
-    cardinality,
-)
-    capacity = isnothing(state.feasible_indices) ?
-        cardinality : length(state.feasible_indices)
-    return !isnothing(capacity) && _occupied_count(state) >= capacity
-end
+_release_occupied!(::Nothing, space, point) = nothing
 
 function _unused_finite_candidates(state::SMBOState, requested)
     isnothing(state.feasible_indices) && return nothing
-    capacity = min(
-        requested,
-        length(state.feasible_indices) - _occupied_count(state),
-    )
+    capacity = min(requested, length(state.feasible_indices))
     selected = Vector{Int}(undef, max(capacity, 0))
     seen = 0
     for index in state.feasible_indices

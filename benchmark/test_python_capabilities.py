@@ -64,15 +64,6 @@ class PythonCapabilityTests(unittest.TestCase):
         for left, right in zip(rotations, rotations[1:]):
             self.assertFalse(np.allclose(left, right))
 
-    def test_all_native_algorithms_use_the_full_trial_matrix(self):
-        trials = range(1, 11)
-        for algorithm, _, _ in correctness.ALGORITHMS:
-            with self.subTest(algorithm=algorithm):
-                self.assertEqual(
-                    correctness.benchmark_trials(algorithm, trials),
-                    tuple(range(1, 11)),
-                )
-
     def test_shgo_halton_trials_are_seeded_realizations(self):
         objective = lambda point: float(np.sum(np.asarray(point) ** 2))
         first = correctness.minimize(

@@ -196,6 +196,22 @@ mutable struct SMBOWorkspace{TX,TY,P}
     available::BitVector
 end
 
+_make_smbo_workspace(algorithm, ::Type{TX}, ::Type{TY}, dimensions) where {TX,TY} =
+    SMBOWorkspace(
+        TY[],
+        TY[],
+        TY[],
+        Matrix{TX}(undef, dimensions, 0),
+        predictionworkspace(algorithm.surrogate, TY),
+        Matrix{TX}(
+            undef,
+            dimensions,
+            max(algorithm.candidate_pool, 8algorithm.batch_size),
+        ),
+        Int[],
+        BitVector(),
+    )
+
 mutable struct SMBOState{C,A,T,W,M,O,FI}
     core::C
     algorithm::A
@@ -240,16 +256,7 @@ function init(problem::Problem, algorithm::SMBO; initial_points=nothing, initial
         algorithm.repeat_policy,
         algorithm.candidate_equality,
     )
-    workspace = SMBOWorkspace(
-        TY[],
-        TY[],
-        TY[],
-        Matrix{T}(undef, d, 0),
-        predictionworkspace(algorithm.surrogate, TY),
-        Matrix{T}(undef, d, max(algorithm.candidate_pool, 8algorithm.batch_size)),
-        Int[],
-        BitVector(),
-    )
+    workspace = _make_smbo_workspace(algorithm, T, TY, d)
     cardinality = space_cardinality(problem.space)
     occupied = _occupancy(
         algorithm.repeat_policy,
@@ -316,58 +323,39 @@ end
 _surrogate_values(::Minimize, values) = values
 _surrogate_values(::Maximize, values) = -values
 
-function ask!(state::SMBOState, requested::Integer=state.algorithm.batch_size)
-    requested >= 0 || throw(ArgumentError("batch size must be nonnegative"))
-    _finished(state.core) && return CandidateBatch(
+function _empty_batch(state::SMBOState)
+    trace = state.core.trace
+    return CandidateBatch(
         UInt64(0),
-        Matrix{eltype(state.core.trace.latent_points)}(
+        Matrix{eltype(trace.latent_points)}(
             undef,
             dimension(state.core.problem.space),
             0,
         ),
         state.core.problem.space,
     )
+end
+
+function ask!(state::SMBOState, requested::Integer=state.algorithm.batch_size)
+    requested >= 0 || throw(ArgumentError("batch size must be nonnegative"))
+    _finished(state.core) && return _empty_batch(state)
     reserved = sum(
         pending -> Base.count(pending.unresolved),
         values(state.pending);
         init=0,
     )
-    cardinality = space_cardinality(state.core.problem.space)
-    if _space_exhausted(state.algorithm.repeat_policy, state, cardinality)
-        state.core.retcode = :space_exhausted
-        return CandidateBatch(
-            UInt64(0),
-            Matrix{eltype(state.core.trace.latent_points)}(
-                undef,
-                dimension(state.core.problem.space),
-                0,
-            ),
-            state.core.problem.space,
-        )
-    end
     count = min(Int(requested), max(0, _remaining(state.core) - reserved))
-    T = eltype(state.core.trace.latent_points)
-    if count == 0
-        return CandidateBatch(
-            UInt64(0),
-            Matrix{T}(undef, dimension(state.core.problem.space), 0),
-            state.core.problem.space,
-        )
-    end
+    count == 0 && return _empty_batch(state)
     available_design = size(state.initial_design, 2) -
         state.initial_design_cursor + 1
-    finite_pool_count = if isnothing(state.feasible_indices)
-        count
-    elseif state.core.trace.count == 0
-        count
-    else
-        min(
-            length(state.feasible_indices) - _occupied_count(state),
-            max(count, state.algorithm.candidate_pool),
-        )
-    end
+    finite_pool_count = state.core.trace.count == 0 ?
+        count : max(count, state.algorithm.candidate_pool)
     finite_candidates =
         _unused_finite_candidates(state, finite_pool_count)
+    if !isnothing(finite_candidates) && isempty(finite_candidates)
+        state.core.retcode = :space_exhausted
+        return _empty_batch(state)
+    end
     if !isnothing(finite_candidates)
         candidates = state.core.trace.count == 0 ?
             finite_candidates :
@@ -416,12 +404,7 @@ function ask!(state::SMBOState, requested::Integer=state.algorithm.batch_size)
     candidates = _deduplicate_candidates(state, candidates, count)
     count = size(candidates, 2)
     count == 0 && begin
-        (!isnothing(finite_candidates) ||
-            _space_exhausted(
-                state.algorithm.repeat_policy,
-                state,
-                cardinality,
-            )) &&
+        !isnothing(finite_candidates) &&
             (state.core.retcode = :space_exhausted)
         state.core.retcode == :running && throw(CandidateGenerationError(
             "candidate generator produced no usable candidates",
@@ -490,8 +473,6 @@ function solve!(state::SMBOState)
     end
     return result(state)
 end
-solve(problem::Problem, algorithm::SMBO; kwargs...) = solve!(init(problem, algorithm; kwargs...))
-trace(state::SMBOState) = state.core.trace
 result(state::SMBOState) = _result(
     state.core,
     state.algorithm,

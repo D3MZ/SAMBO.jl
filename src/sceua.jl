@@ -50,22 +50,16 @@ end
 mutable struct SCEUAWorkspace{TX,TY}
     population::Matrix{TX}
     values::Vector{TY}
-    sorted_population::Matrix{TX}
-    sorted_values::Vector{TY}
-    losses::Vector{TY}
     permutation::Vector{Int}
-    centroids::Matrix{TX}
-    proposals::Matrix{TX}
-    proposal_values::Vector{TY}
+    scratch_population::Matrix{TX}
+    scratch_values::Vector{TY}
+    members::Vector{Int}
+    centroid::Vector{TX}
+    proposal::Vector{TX}
     initialized::Bool
     finite_feasible::Union{Nothing,Vector{Int}}
     occupied::BitSet
     complexes::Int
-    complex_population::Matrix{TX}
-    complex_values::Vector{TY}
-    complex_losses::Vector{TY}
-    complex_permutation::Vector{Int}
-    complex_members::Vector{Int}
     previous_best_loss::TY
     stalled_iterations::Int
 end
@@ -100,22 +94,16 @@ function init(problem::Problem, algorithm::SCEUA; initial_points=nothing, initia
     workspace = SCEUAWorkspace(
         Matrix{TX}(undef, d, population_size),
         Vector{TY}(undef, population_size),
-        Matrix{TX}(undef, d, population_size),
-        Vector{TY}(undef, population_size),
-        Vector{TY}(undef, population_size),
-        collect(1:population_size),
-        Matrix{TX}(undef, d, population_size),
-        Matrix{TX}(undef, d, population_size),
-        Vector{TY}(undef, population_size),
+        Vector{Int}(undef, population_size + 1),
+        Matrix{TX}(undef, d, population_size + 1),
+        Vector{TY}(undef, population_size + 1),
+        Vector{Int}(undef, population_size + 1),
+        Vector{TX}(undef, d),
+        Vector{TX}(undef, d),
         false,
         finite_feasible,
         BitSet(),
         complexes,
-        Matrix{TX}(undef, d, population_size + 1),
-        Vector{TY}(undef, population_size + 1),
-        Vector{TY}(undef, population_size + 1),
-        Vector{Int}(undef, population_size + 1),
-        Vector{Int}(undef, population_size + 1),
         convert(TY, Inf),
         0,
     )
@@ -252,16 +240,6 @@ function _sceua_theta(space)
     return clamp(0.2 + 0.1 * (log_width - 2), 0.2, 0.5)
 end
 
-function _reflection!(proposal, centroid, worst, coefficient)
-    @. proposal = centroid + coefficient * (centroid - worst)
-    return proposal
-end
-
-function _contraction!(proposal, centroid, worst, coefficient)
-    @. proposal = worst + coefficient * (centroid - worst)
-    return proposal
-end
-
 function _sceua_span(workspace, space)
     isempty(workspace.values) && return Inf
     total_span = zero(eltype(workspace.population))
@@ -274,30 +252,46 @@ function _sceua_span(workspace, space)
     return total_span
 end
 
+function _sort_members!(workspace, sense, count)
+    members = workspace.members
+    for position in 1:count
+        member = members[position]
+        workspace.scratch_values[position] =
+            _loss(sense, workspace.values[member])
+    end
+    permutation = @view workspace.permutation[1:count]
+    sortperm!(permutation, @view(workspace.scratch_values[1:count]))
+    best_loss = workspace.scratch_values[permutation[1]]
+    for destination in 1:count
+        source = members[permutation[destination]]
+        workspace.scratch_population[:, destination] .=
+            @view workspace.population[:, source]
+        workspace.scratch_values[destination] = workspace.values[source]
+    end
+    for destination in 1:count
+        member = members[destination]
+        workspace.population[:, member] .=
+            @view workspace.scratch_population[:, destination]
+        workspace.values[member] = workspace.scratch_values[destination]
+    end
+    return best_loss
+end
+
 function step!(state::SCEUAState)
     _finished(state.core) && return state
     !state.workspace.initialized && return _initialize_sceua!(state)
 
     core = state.core
     workspace = state.workspace
-    for index in eachindex(workspace.values)
-        workspace.losses[index] =
-            _loss(core.problem.sense, workspace.values[index])
-    end
-    sortperm!(workspace.permutation, workspace.losses)
-    for destination in eachindex(workspace.permutation)
-        source = workspace.permutation[destination]
-        copyto!(
-            @view(workspace.sorted_population[:, destination]),
-            @view(workspace.population[:, source]),
-        )
-        workspace.sorted_values[destination] = workspace.values[source]
-    end
-    copyto!(workspace.population, workspace.sorted_population)
-    copyto!(workspace.values, workspace.sorted_values)
-
     population_size = size(workspace.population, 2)
-    best_loss = workspace.losses[workspace.permutation[1]]
+    for index in 1:population_size
+        workspace.members[index] = index
+    end
+    best_loss = _sort_members!(
+        workspace,
+        core.problem.sense,
+        population_size,
+    )
     improvement = workspace.previous_best_loss - best_loss
     if (
         state.algorithm.objective_tolerance > 0 &&
@@ -321,7 +315,7 @@ function step!(state::SCEUAState)
 
     complexes = min(workspace.complexes, population_size)
     theta = _sceua_theta(core.problem.space)
-    members = workspace.complex_members
+    members = workspace.members
     core.iteration += 1
     evolved = false
     for complex_index in 1:complexes
@@ -333,16 +327,17 @@ function step!(state::SCEUAState)
         )
         member_count <= 1 && continue
         worst_index = members[member_count]
-        centroid = @view workspace.centroids[:, complex_index]
+        centroid = workspace.centroid
         fill!(centroid, zero(eltype(centroid)))
         for member_position in 1:member_count-1
             centroid .+= @view workspace.population[:, members[member_position]]
         end
         centroid ./= member_count - 1
 
-        proposal = @view workspace.proposals[:, complex_index]
+        proposal = workspace.proposal
         worst = @view workspace.population[:, worst_index]
-        _reflection!(proposal, centroid, worst, state.algorithm.reflection)
+        @. proposal =
+            centroid + state.algorithm.reflection * (centroid - worst)
         @. proposal = (1 - theta) * proposal +
             theta * workspace.population[:, 1]
         repair!(
@@ -354,8 +349,8 @@ function step!(state::SCEUAState)
         ) || continue
         _remaining(core) == 0 && return state
         evolved = true
-        proposal_matrix = @view workspace.proposals[:, complex_index:complex_index]
-        proposal_value = @view workspace.proposal_values[complex_index:complex_index]
+        proposal_matrix = reshape(proposal, :, 1)
+        proposal_value = @view workspace.scratch_values[1:1]
         _evaluate_batch!(proposal_value, core, proposal_matrix)
         _commit_batch!(core, proposal_matrix, proposal_value)
         accepted = false
@@ -368,12 +363,8 @@ function step!(state::SCEUAState)
             workspace.values[worst_index] = proposal_value[1]
             accepted = true
         else
-            _contraction!(
-                proposal,
-                centroid,
-                worst,
-                state.algorithm.contraction,
-            )
+            @. proposal =
+                worst + state.algorithm.contraction * (centroid - worst)
             @. proposal = (1 - theta) * proposal +
                 theta * workspace.population[:, 1]
             repair!(
@@ -398,41 +389,20 @@ function step!(state::SCEUAState)
             end
             if !accepted
                 _finished(core) && return state
-                replacement = @view workspace.proposals[:, complex_index:complex_index]
                 _sample_feasible!(
                     core.rng,
-                    replacement,
+                    proposal_matrix,
                     UniformDesign(),
                     core.problem,
                 )
-                _evaluate_batch!(proposal_value, core, replacement)
-                _commit_batch!(core, replacement, proposal_value)
+                _evaluate_batch!(proposal_value, core, proposal_matrix)
+                _commit_batch!(core, proposal_matrix, proposal_value)
                 workspace.population[:, worst_index] .= proposal
                 workspace.values[worst_index] = proposal_value[1]
             end
         end
 
-        for member_position in 1:member_count
-            member = members[member_position]
-            workspace.complex_population[:, member_position] .=
-                @view workspace.population[:, member]
-            workspace.complex_values[member_position] = workspace.values[member]
-            workspace.complex_losses[member_position] =
-                _loss(core.problem.sense, workspace.values[member])
-        end
-        local_permutation =
-            @view workspace.complex_permutation[1:member_count]
-        sortperm!(
-            local_permutation,
-            @view(workspace.complex_losses[1:member_count]),
-        )
-        for member_position in 1:member_count
-            member = members[member_position]
-            source = local_permutation[member_position]
-            workspace.population[:, member] .=
-                @view workspace.complex_population[:, source]
-            workspace.values[member] = workspace.complex_values[source]
-        end
+        _sort_members!(workspace, core.problem.sense, member_count)
         _finished(core) && return state
     end
     !evolved && !_finished(core) && (core.retcode = :stalled)
@@ -452,8 +422,6 @@ function solve!(state::SCEUAState)
     end
     return result(state)
 end
-solve(problem::Problem, algorithm::SCEUA; kwargs...) = solve!(init(problem, algorithm; kwargs...))
-trace(state::SCEUAState) = state.core.trace
 result(state::SCEUAState) = _result(
     state.core,
     state.algorithm;

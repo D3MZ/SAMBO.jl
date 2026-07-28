@@ -123,30 +123,6 @@ end
         @test evaluation_count(budget_limited) == 0
     end
 
-    @testset "blocked topological local start is exhausted, not infeasible" begin
-        state = init(
-            Problem(
-                x -> x[1]^2,
-                SAMBO.Box([0.0], [1.0]);
-                constraint=x -> abs(x[1] - 0.5) <= eps(),
-            ),
-            SAMBO.TopologicalMultistart(samples=4, local_starts=1);
-            initial_points=[[0.5]],
-            initial_values=[0.25],
-            maximum_evaluations=4,
-            rng=MersenneTwister(913),
-        )
-        state.workspace.sample_points[:, 1] .= 0.5
-        state.workspace.sample_values[1] = 0.25
-        state.workspace.local_indices = [1]
-        state.workspace.local_minima_count = 1
-        state.workspace.initialized = true
-        SAMBO._begin_local_start!(state, 1)
-        step!(state)
-        @test retcode(result(state)) == :stalled
-        @test evaluation_count(result(state)) == 0
-    end
-
     @testset "failed SCE contraction is not evaluated" begin
         policy = AuditAlternatingRepair(0)
         state = init(

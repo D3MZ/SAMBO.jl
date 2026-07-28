@@ -33,6 +33,10 @@ const PublicSolverState = Union{
     TopologicalMultistartState,
 }
 
+solve(problem::Problem, algorithm; kwargs...) =
+    solve!(init(problem, algorithm; kwargs...))
+trace(state::PublicSolverState) = state.core.trace
+
 """Return the problem owned by a live solver state."""
 problem(state::PublicSolverState) = state.core.problem
 problem(result::Result) = result.problem

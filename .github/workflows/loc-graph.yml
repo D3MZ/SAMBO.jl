@@ -20,5 +20,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Report component LOC
+        run: |
+          sudo apt-get install -y cloc --no-install-recommends
+          src_loc=$(cloc --json --quiet --include-lang=Julia src | jq -r '.SUM.code // 0')
+          test_loc=$(cloc --json --quiet --include-lang=Julia test | jq -r '.SUM.code // 0')
+          benchmark_loc=$(cloc --json --quiet --exclude-ext=svg,json,csv benchmark | jq -r '.SUM.code // 0')
+          {
+            echo "### Lines of code"
+            echo "| Component | LOC |"
+            echo "|---|---:|"
+            echo "| \`src/**/*.jl\` | $src_loc |"
+            echo "| \`test/**/*.jl\` | $test_loc |"
+            echo "| \`benchmark/**/*\` | $benchmark_loc |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Redirect generated assets
+        run: git config remote.origin.push '+HEAD:refs/heads/loc-assets'
+
       - name: Generate LOC graph
         uses: botforge-pro/loc-graph-action@b09213ca8bec00e64e2e4a9a1f04d1e813ddcefc # v1.3.0
+        with:
+          exclude: "docs,results"

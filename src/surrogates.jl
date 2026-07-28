@@ -77,10 +77,9 @@ function GaussianProcessSurrogate(;
     )
 end
 
-struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,LM,L,K}
+struct GaussianProcessModel{T,M<:AbstractMatrix{T},V<:AbstractVector{T},F,L,K}
     points::M
     factor::F
-    lower::LM
     alpha::V
     output_mean::T
     output_scale::T
@@ -107,7 +106,6 @@ function fittedmodeltype(
         Matrix{T},
         Vector{T},
         Cholesky{T,Matrix{T}},
-        Matrix{T},
         LS,
         K,
     }
@@ -265,7 +263,6 @@ function fitmodel(specification::GaussianProcessSurrogate, points, values, rng=R
     return GaussianProcessModel(
         X,
         factor,
-        Matrix(factor.L),
         alpha,
         output_mean,
         output_scale,
@@ -372,20 +369,6 @@ _kernel_value(::Matern52Kernel, distance_squared) =
 _kernel_value(::SquaredExponentialKernel, distance_squared) =
     exp(-distance_squared / 2)
 
-function _kernelmatrix(model::GaussianProcessModel, points)
-    size(points, 1) == size(model.points, 1) ||
-        throw(DimensionMismatch("candidate and model dimensions differ"))
-    T = eltype(model.points)
-    kernel = Matrix{T}(undef, size(model.points, 2), size(points, 2))
-    for column in axes(points, 2), observation in axes(model.points, 2)
-        kernel[observation, column] = model.amplitude * _kernel_value(model.kernel, _scaled_distance(
-            @view(points[:, column]),
-            @view(model.points[:, observation]),
-            model.length_scale,
-        ))
-    end
-    return kernel
-end
 function kernelmatrix!(kernel, model::GaussianProcessModel, points)
     size(kernel) == (size(model.points, 2), size(points, 2)) ||
         throw(DimensionMismatch("kernel destination has the wrong size"))
@@ -418,19 +401,6 @@ function ensure_capacity!(workspace::GPPredictionWorkspace{T}, observations, can
     end
     return workspace
 end
-function _forward_solve!(destination, lower)
-    @inbounds for column in axes(destination, 2)
-        for row in axes(destination, 1)
-            value = destination[row, column]
-            for previous in 1:row-1
-                value -= lower[row, previous] * destination[previous, column]
-            end
-            destination[row, column] = value / lower[row, row]
-        end
-    end
-    return destination
-end
-
 struct EnsembleSurrogate{S}
     base::S
     count::Int
@@ -589,7 +559,7 @@ function predictmeanvariance!(
     solved_kernel =
         @view workspace.solved_kernel[1:observations, 1:candidates]
     copyto!(solved_kernel, kernel)
-    _forward_solve!(solved_kernel, model.lower)
+    ldiv!(model.factor.L, solved_kernel)
     T = eltype(solved_kernel)
     for column in axes(solved_kernel, 2)
         latent_variance = max(
